@@ -16,7 +16,7 @@ const int MAX_TAG_DIRECTIVES = 16;            // %TAG per document
 // Budgets for one from_* call (all documents of the stream): what alias expansion would create.
 const sz MAX_ALIAS_NODES = 1_000_000;
 const sz MAX_ALIAS_BYTES = 64 * 1024 * 1024;
-// Only JSON output and to_object: the text of collection keys.
+// At parse time (stream-wide) and in to_object/Node printing: the text of collection keys.
 const sz MAX_KEY_TEXT = 4 * 1024 * 1024;
 const sz KEY_TEXT_PER_BYTE = 4;
 
