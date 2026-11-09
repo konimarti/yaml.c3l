@@ -5,8 +5,8 @@ language](http://c3-lang.org).
 
 * Parses the full YAML 1.2 syntax: block and flow collections, all scalar styles,
   anchors and aliases, tags, `%YAML` and `%TAG` directives, multiple documents.
-* Builds `std::collections::Object` trees using the YAML 1.2 core schema (null, bool, int,
-  float, string).
+* Builds `Object` trees (`std::collections::object`) using the YAML 1.2 core schema (null,
+  bool, int, float, string), or decodes a document straight into a struct.
 * Passes all 402 cases of the [yaml-test-suite](https://github.com/yaml/yaml-test-suite)
   (events and errors), and all 279 JSON comparisons.
 * Limits alias expansion, collection keys and nesting depth, so "billion laughs" inputs fail
@@ -26,23 +26,16 @@ order mark is skipped at the start of the stream and at the start of a line outs
 collection or scalar (YAML allows one before each document). Anything else, such as a NUL
 byte, fails with `parser::INVALID_CHARACTER`.
 
-Read data from `String s`:
 ```
-Yaml data = yaml::from_string(s)!;
-```
-
-Read data from `InStream in`:
-```
-Yaml data = yaml::from_stream(in)!;
-```
-
-Read data directly from a file path:
-```
+Yaml data = yaml::parse(s)!;                 // a String, char[], DString or InStream (&file)
+Yaml data = yaml::tparse(s)!;                // the same with tmem: no free() needed
+Yaml data = yaml::from_string(s)!;           // the typed forms: from_string, from_stream, from_file
+Yaml data = yaml::from_stream(&file)!;
 Yaml data = yaml::from_file("config.yaml")!;
 ```
 
-The `yaml::from_*` functions accept two additional arguments: a memory allocator and a flag
-for error verbosity. The default allocator is `mem`. Release the data with `data.free()`.
+All of them accept a memory allocator (default `mem`; `tparse` always uses `tmem`) and a flag
+for error verbosity. Release the data with `data.free()`.
 
 A YAML stream can hold several documents. `data.len()` is the number of documents, and each
 document is one `Object*`. An empty document is `null`. To declare an `Object*` variable, add
@@ -69,13 +62,40 @@ Untagged plain scalars are resolved with the core schema:
 * `1.5`, `1e3`, `.inf`, `-.Inf`, `.nan` give float.
 
 Quoted and block scalars are strings. The tags `!!str`, `!!int`, `!!float`, `!!bool` and
-`!!null` force a type; any other tag is kept in the event stream but does not change the
-value.
+`!!null` force a type; a value that does not fit the tag fails with
+`yaml::INVALID_INPUT_FORMAT`. Any other tag is kept in the event stream, and a scalar with
+such a tag is a string (`!foo 12` is `"12"`).
 
 Aliases are deep copies of the anchored node. Duplicate keys keep the last value. A null key
-(`~: x`, or `? : x`) and the empty string key (`"": x`) are the same key `""`, so
+(`~: x`, `: x` or `{? : x}`) and the empty string key (`"": x`) are the same key `""`, so
 `{"": 1, ~: 2}` has a single entry. A collection used as a key (`[a, b]: c`) becomes its
 compact JSON text (`["a","b"]`).
+
+### Decoding into a struct
+
+`yaml::decode{T}(data)` decodes the first document into a `T` (`yaml::decode_in{T}(data, doc)`
+another one):
+
+```c3
+enum Mode { DEV, PROD }
+struct Database { String host; int[2] ports; Mode mode; }
+struct Config { String title; double ratio; Database database; String[] tags; }
+
+Yaml data = yaml::tparse(s)!;
+Config cfg = yaml::decode{Config}(data, tmem)!;
+```
+
+See `example/yaml-decode.c3`. Supported members: structs (nested), all integer types
+(range-checked), `float`/`double` (an int is accepted), `bool`, `String`, enums (by name),
+fixed arrays (a shorter sequence leaves the rest zero) and slices of any of these. A missing or
+null key leaves the member zeroed and unknown keys are ignored. A wrong type, an out-of-range
+integer, an unknown enum name or a sequence that is too long fails with `yaml::DECODE_ERROR`
+and, with `verbose`, prints the path (`database.ports.1: expected int, got string`). A missing
+document fails with `NOT_FOUND`.
+
+Memory: every `String` and slice of the result is allocated with the given allocator (default
+`mem`). Use `tmem` or an arena to free it all at once, or free each one yourself. The result
+does not refer to `data`, and after an error nothing stays allocated.
 
 ### Error handling
 
@@ -151,13 +171,23 @@ printed as `1.0` and `1000.0`. `.inf` and `.nan` have no JSON form and are print
 
 ### Installation
 
-Add the library as a submodule to your C3 project:
+With [c3l](https://github.com/konimarti/c3l):
 
-```
-git submodule add http://github.com/konimarti/yaml.c3l lib
+```sh
+c3l add https://github.com/konimarti/yaml.c3l
 ```
 
-Then update your `project.json` to include:
+This installs the library into `lib/` and records it in `project.json` and `c3l.lock`. After
+cloning your project, run `c3l sync` to restore it.
+
+Or as a git submodule. The directory must be named `yaml.c3l` and lie inside a dependency
+search path:
+
+```sh
+git submodule add https://github.com/konimarti/yaml.c3l lib/yaml.c3l
+```
+
+and in your `project.json`:
 
 ```json
 {
@@ -188,7 +218,7 @@ json PASS 279/279
 ```
 
 `-v` lists the failing cases, and `test/run-suite.sh test-suite/<ID>` shows the diff for one
-case. The JSON comparison needs `python3`.
+case. The JSON comparison needs Python 3 (`python3` or `python`); without it `-j` exits with 2.
 
 ### Example
 
