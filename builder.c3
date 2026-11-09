@@ -15,6 +15,7 @@ struct Builder
 	Parser* p;
 	Allocator a;
 	sz alias_nodes;
+	sz alias_bytes;
 	sz key_text;
 	int depth;
 	HashMap {String, Object*} anchors;   // the anchored nodes (owned by the tree or by `dropped`)
@@ -42,7 +43,7 @@ fn Object*? Builder.node(&self, Event e)
 			Object*? anchored = self.anchors.get(e.anchor);
 			if (catch anchored) return self.error(e.start, "undefined alias", UNDEFINED_ALIAS)~;
 			Object*? copy = self.clone(anchored, self.a, self.depth);
-			if (catch copy) return self.error(e.start, "alias expansion or nesting limit exceeded", parser::LIMIT_EXCEEDED)~;
+			if (catch copy) return self.error(e.start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
 			return copy;
 		case SCALAR:
 			o = self.scalar(e)!;
@@ -98,7 +99,8 @@ fn String? Builder.key(&self, Event e)
 }
 
 // Deep copy for an alias (sharing an Object* would make Object.free free it twice). Every
-// created node counts against MAX_ALIAS_NODES; `depth` is the depth of the alias.
+// created node counts against MAX_ALIAS_NODES, every copied string and key against
+// MAX_ALIAS_BYTES; `depth` is the depth of the alias.
 fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 {
 	if (++self.alias_nodes > parser::MAX_ALIAS_NODES) return parser::LIMIT_EXCEEDED~;
@@ -108,7 +110,9 @@ fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 		case o.is_bool(): return object::new_bool(o.b);
 		case o.is_int(): return object::new_int(a, o.i);
 		case o.is_float(): return object::new_float(a, o.f);
-		case o.is_string(): return object::new_string(a, o.s);
+		case o.is_string():
+			if ((self.alias_bytes += o.s.len) > parser::MAX_ALIAS_BYTES) return parser::LIMIT_EXCEEDED~;
+			return object::new_string(a, o.s);
 	}
 	if (depth + 1 > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
 	if (o.is_array())
@@ -121,7 +125,11 @@ fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 	Object* map = object::new_obj(a);
 	defer catch map.free();
 	if (o.type == void) return map;   // empty map
-	foreach (key : o.map.keys(tmem)) map.set(key, self.clone(o.get(key)!, a, depth + 1)!);
+	foreach (key : o.map.keys(tmem))
+	{
+		if ((self.alias_bytes += key.len) > parser::MAX_ALIAS_BYTES) return parser::LIMIT_EXCEEDED~;
+		map.set(key, self.clone(o.get(key)!, a, depth + 1)!);
+	}
 	return map;
 }
 

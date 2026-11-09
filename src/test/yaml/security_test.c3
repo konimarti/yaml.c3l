@@ -63,3 +63,25 @@ fn void nested_collection_keys() @test => @pool()
 	test::eq(data.get(`["a",{"b":"c"}]`)!!.i, 1);
 }
 
+// S2: alias expansion counts the copied bytes, not only the nodes (before: 1 MB of input with
+// 2 000 aliases of a 1 MB string needed 2 GB)
+fn void alias_bytes_limit() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("a: &a ");
+	s.append_repeat('x', 1024 * 1024);
+	s.append("\nb: [");
+	for (int i = 0; i < 100; i++) s.append("*a, ");
+	s.append("]\n");
+	test::@error(yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
+	// keys are copied too
+	DString long_key = dstring::temp();
+	long_key.append_repeat('y', 1000);
+	s.clear();
+	s.append("a: &a {");
+	for (int i = 0; i < 1000; i++) s.appendf("%d%s: 0, ", i, long_key);
+	s.append("}\nb: [");
+	for (int i = 0; i < 100; i++) s.append("*a, ");
+	s.append("]\n");
+	test::@error(yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
+}

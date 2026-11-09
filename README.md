@@ -90,6 +90,8 @@ The limits for untrusted input are constants in `yaml::parser`. Exceeding one fa
   that come from aliases.
 * `parser::MAX_ALIAS_NODES` (1,000,000): nodes created by alias expansion in a single
   document.
+* `parser::MAX_ALIAS_BYTES` (64 MiB): string and key bytes copied by alias expansion in a
+  single document.
 * `parser::MAX_KEY_TEXT` (4 MiB): the JSON text of all collection keys (`[a, b]: c`) in a
   single document.
 
