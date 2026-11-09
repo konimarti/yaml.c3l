@@ -83,10 +83,8 @@ fn bool Token.is(self, TokenType... types)
 	return false;
 }
 
-// Report an error at `t` and return its fault: `return self.err(t, msg)~;`.
-fn fault Parser.err(&self, Token t, String msg, fault f = SYNTAX_ERROR) => self.scanner.error(t.start, msg, f);
-
-fn Event? Parser.fail(&self, Token t, String msg, fault f = SYNTAX_ERROR) => self.err(t, msg, f)~;
+// Report an error at `m` and return its fault: `return self.error(t.start, msg)~;`.
+fn fault Parser.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR) => self.scanner.error(m, msg, f);
 
 // The document ends at '...', '---' or the end of the stream.
 fn Event? Parser.document_start(&self, bool implicit)
@@ -106,9 +104,9 @@ fn Event? Parser.document_start(&self, bool implicit)
 	}
 	if (t.is(T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE))
 	{
-		if (!implicit) return self.fail(t, "a directive after a document needs '...' first");
+		if (!implicit) return self.error(t.start, "a directive after a document needs '...' first")~;
 		t = self.directives()!;
-		if (t.type != T_DOCUMENT_START) return self.fail(t, "expected '---' after the directives");
+		if (t.type != T_DOCUMENT_START) return self.error(t.start, "expected '---' after the directives")~;
 	}
 	self.states.push(DOCUMENT_END);
 	if (t.type == T_DOCUMENT_START)
@@ -117,7 +115,7 @@ fn Event? Parser.document_start(&self, bool implicit)
 		self.state = DOCUMENT_CONTENT;
 		return { .type = DOCUMENT_START, .explicit = true, .start = t.start };
 	}
-	if (!implicit) return self.fail(t, "unexpected content after the document's root node");
+	if (!implicit) return self.error(t.start, "unexpected content after the document's root node")~;
 	self.state = BLOCK_NODE;
 	return { .type = DOCUMENT_START, .start = t.start };
 }
@@ -132,12 +130,12 @@ fn Token? Parser.directives(&self)
 	{
 		if (t.type == T_VERSION_DIRECTIVE)
 		{
-			if (version) return self.err(t, "duplicate %YAML directive", INVALID_DIRECTIVE)~;
+			if (version) return self.error(t.start, "duplicate %YAML directive", INVALID_DIRECTIVE)~;
 			version = true;
 		}
 		else if (t.type == T_TAG_DIRECTIVE)
 		{
-			if (self.tag_directives.has_key(t.handle)) return self.err(t, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
+			if (self.tag_directives.has_key(t.handle)) return self.error(t.start, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
 			self.tag_directives.set(t.handle, t.value);
 		}
 		self.scanner.next_token()!;
@@ -155,7 +153,7 @@ fn String? Parser.resolve_tag(&self, Token t)
 	if (try prefix) return prefix.tconcat(t.value);
 	if (t.handle == "!") return "!".tconcat(t.value);
 	if (t.handle == "!!") return "tag:yaml.org,2002:".tconcat(t.value);
-	return self.err(t, "undefined tag handle", UNDEFINED_TAG_HANDLE)~;
+	return self.error(t.start, "undefined tag handle", UNDEFINED_TAG_HANDLE)~;
 }
 
 fn Event? Parser.document_content(&self)
@@ -194,12 +192,12 @@ fn Event? Parser.node(&self, bool indentless_sequence)
 	{
 		if (t.type == T_ANCHOR)
 		{
-			if (e.anchor.len) return self.fail(t, "a node can have only one anchor");
+			if (e.anchor.len) return self.error(t.start, "a node can have only one anchor")~;
 			e.anchor = t.value;
 		}
 		else
 		{
-			if (e.tag.len) return self.fail(t, "a node can have only one tag");
+			if (e.tag.len) return self.error(t.start, "a node can have only one tag")~;
 			e.tag = self.resolve_tag(t)!;
 		}
 		props = true;
@@ -209,7 +207,7 @@ fn Event? Parser.node(&self, bool indentless_sequence)
 	switch (t.type)
 	{
 		case T_ALIAS:
-			if (props) return self.fail(t, "an alias cannot have properties");
+			if (props) return self.error(t.start, "an alias cannot have properties")~;
 			self.scanner.next_token()!;
 			self.state = self.states.pop()!!;
 			return { .type = ALIAS, .anchor = t.value, .start = t.start };
@@ -242,7 +240,7 @@ fn Event? Parser.node(&self, bool indentless_sequence)
 		default:
 			break;
 	}
-	if (!props) return self.fail(t, "expected a node");
+	if (!props) return self.error(t.start, "expected a node")~;
 	self.state = self.states.pop()!!;
 	e.type = SCALAR;
 	return e;
@@ -257,7 +255,7 @@ fn Event? Parser.block_sequence_entry(&self)
 		self.state = self.states.pop()!!;
 		return { .type = SEQUENCE_END, .start = t.start };
 	}
-	if (t.type != T_BLOCK_ENTRY) return self.fail(t, "expected '-' or a less indented line");
+	if (t.type != T_BLOCK_ENTRY) return self.error(t.start, "expected '-' or a less indented line")~;
 	self.scanner.next_token()!;
 	return self.node_or_empty(BLOCK_SEQUENCE_ENTRY, false, T_BLOCK_ENTRY, T_BLOCK_END);
 }
@@ -291,7 +289,7 @@ fn Event? Parser.block_mapping_key(&self)
 			self.scanner.next_token()!;
 			return self.node_or_empty(BLOCK_MAPPING_VALUE, true, T_KEY, T_VALUE, T_BLOCK_END);
 		default:
-			return self.fail(t, "expected a mapping key or a less indented line");
+			return self.error(t.start, "expected a mapping key or a less indented line")~;
 	}
 }
 
@@ -313,7 +311,7 @@ fn Event? Parser.block_mapping_value(&self)
 fn Token? Parser.flow_separator(&self, Token t, bool first, String msg)
 {
 	if (first) return t;
-	if (t.type != T_FLOW_ENTRY) return self.err(t, msg)~;
+	if (t.type != T_FLOW_ENTRY) return self.error(t.start, msg)~;
 	self.scanner.next_token()!;
 	return self.scanner.peek_token()!;
 }

@@ -31,8 +31,6 @@ fn Object*? build_document(Parser* p, Event root, Allocator a)
 	return b.node(root);
 }
 
-fn fault Builder.error(&self, Mark m, String msg, fault f) => self.p.scanner.error(m, msg, f);
-
 fn Object*? Builder.node(&self, Event e)
 {
 	Object* o = null;
@@ -41,14 +39,14 @@ fn Object*? Builder.node(&self, Event e)
 	{
 		case ALIAS:
 			Object*? anchored = self.anchors.get(e.anchor);
-			if (catch anchored) return self.error(e.start, "undefined alias", UNDEFINED_ALIAS)~;
+			if (catch anchored) return self.p.error(e.start, "undefined alias", UNDEFINED_ALIAS)~;
 			Object*? copy = self.clone(anchored, self.a, self.depth);
-			if (catch copy) return self.error(e.start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
+			if (catch copy) return self.p.error(e.start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
 			return copy;
 		case SCALAR:
 			o = self.scalar(e)!;
 		case SEQUENCE_START:
-			if (++self.depth > parser::MAX_DEPTH) return self.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
+			if (++self.depth > parser::MAX_DEPTH) return self.p.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			o = object::new_array(self.a);
 			while (true)
 			{
@@ -58,7 +56,7 @@ fn Object*? Builder.node(&self, Event e)
 			}
 			self.depth--;
 		case MAPPING_START:
-			if (++self.depth > parser::MAX_DEPTH) return self.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
+			if (++self.depth > parser::MAX_DEPTH) return self.p.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			o = object::new_obj(self.a);
 			while (true)
 			{
@@ -75,7 +73,7 @@ fn Object*? Builder.node(&self, Event e)
 			}
 			self.depth--;
 		default:
-			return self.error(e.start, "unexpected event", parser::SYNTAX_ERROR)~;
+			return self.p.error(e.start, "unexpected event", parser::SYNTAX_ERROR)~;
 	}
 	if (e.anchor.len) self.anchors.set(e.anchor, o);
 	return o;
@@ -94,7 +92,7 @@ fn String? Builder.key(&self, Event e)
 	// a nested collection key is escaped again at every level: the text can double per level
 	String text = string::tformat("%s", (Json){ k });
 	self.key_text += text.len;
-	if (self.key_text > parser::MAX_KEY_TEXT) return self.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+	if (self.key_text > parser::MAX_KEY_TEXT) return self.p.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
 	return text;
 }
 
@@ -160,7 +158,7 @@ fn Object*? Builder.scalar(&self, Event e)
 		case TAG_NULL:
 		case TAG_BOOL:
 		case TAG_INT:
-		case TAG_FLOAT: return self.error(e.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
+		case TAG_FLOAT: return self.p.error(e.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
 		default: return object::new_string(self.a, v);
 	}
 }
