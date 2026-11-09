@@ -210,3 +210,14 @@ fn void limits_cover_the_stream() @test => @pool()
 	YamlData data = yaml::from_string(keys.str_view()[:keys.str_view().index_of("\n")!! + 1], mem, false)!!;
 	data.free();
 }
+
+// N5: the key text budget grows with the input, so a large valid file with many collection
+// keys passes (before: a fixed 4 MiB rejected this 1.7 MB file at line 54 616)
+fn void many_valid_collection_keys() @test => @pool()
+{
+	DString s = dstring::temp();
+	for (int i = 0; i < 60_000; i++) s.appendf("{a, b, c, d, e, f, g, %d}: v\n", i);
+	YamlData data = yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false)!!;
+	defer data.free();
+	test::eq(data.get("")!!.map.len(), 60_000);
+}

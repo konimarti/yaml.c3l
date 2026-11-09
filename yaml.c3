@@ -102,7 +102,7 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 {
 	Parser parser;
 	parser.init(s, verbose);
-	Budget budget;   // one for all documents
+	Budget budget = { .max_key_text = parser::MAX_KEY_TEXT + parser::KEY_TEXT_PER_BYTE * s.len };   // one for all documents
 	YamlData data = { .allocator = allocator };
 	data.docs.init(allocator);
 	defer catch data.free();

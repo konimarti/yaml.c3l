@@ -104,7 +104,9 @@ The other limits are budgets for one `yaml::from_*` call, shared by all document
 stream (the result keeps every document):
 * `parser::MAX_ALIAS_NODES` (1,000,000): nodes created by alias expansion.
 * `parser::MAX_ALIAS_BYTES` (64 MiB): string and key bytes copied by alias expansion.
-* `parser::MAX_KEY_TEXT` (4 MiB): the JSON text of all collection keys (`[a, b]: c`).
+* `parser::MAX_KEY_TEXT` (4 MiB) plus `parser::KEY_TEXT_PER_BYTE` (4) bytes per input byte:
+  the JSON text of all collection keys (`[a, b]: c`). A nested collection key is escaped
+  again at every level, so its text can double per level.
 
 ### Command-line tool
 

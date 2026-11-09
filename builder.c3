@@ -15,7 +15,8 @@ struct Budget
 {
 	sz alias_nodes;   // nodes created by alias expansion (MAX_ALIAS_NODES)
 	sz alias_bytes;   // string and key bytes copied by alias expansion (MAX_ALIAS_BYTES)
-	sz key_text;      // bytes of JSON text made for collection keys (MAX_KEY_TEXT)
+	sz key_text;      // bytes of JSON text made for collection keys
+	sz max_key_text;  // MAX_KEY_TEXT + KEY_TEXT_PER_BYTE * input length
 }
 
 // Events -> Object for one document.
@@ -99,7 +100,7 @@ fn String? Builder.key(&self, Event e)
 	// a nested collection key is escaped again at every level: the text can double per level
 	String text = string::tformat("%s", (Json){ key_node });
 	self.budget.key_text += text.len;
-	if (self.budget.key_text > parser::MAX_KEY_TEXT) return self.parser.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+	if (self.budget.key_text > self.budget.max_key_text) return self.parser.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
 	return text;
 }
 

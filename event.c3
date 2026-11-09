@@ -13,7 +13,8 @@ const int MAX_DEPTH = 512;              // nesting depth: flow collections in th
 // The others are budgets for one from_* call: all documents of the stream together.
 const sz MAX_ALIAS_NODES = 1_000_000;   // nodes created by alias expansion
 const sz MAX_ALIAS_BYTES = 64 * 1024 * 1024;   // string and key bytes copied by alias expansion
-const sz MAX_KEY_TEXT = 4 * 1024 * 1024;       // JSON text of the collection keys
+const sz MAX_KEY_TEXT = 4 * 1024 * 1024;       // JSON text of the collection keys, plus:
+const sz KEY_TEXT_PER_BYTE = 4;                // ... this much per input byte (valid keys grow ~1-4x)
 
 struct Mark
 {
