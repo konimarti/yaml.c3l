@@ -749,18 +749,20 @@ fn void? Scanner.fetch_block_scalar(&self, bool literal)
 	self.push(T_SCALAR, m, value, literal ? LITERAL : FOLDED);
 }
 
+enum Chomp : char { CLIP, STRIP, KEEP }   // block scalar header: none, '-', '+'
+
 fn String? Scanner.scan_block_scalar(&self, bool literal)
 {
 	self.advance();
-	// header: chomping ('-' strip, '+' keep) and indentation indicator 1-9, in either order
-	int chomp = 0;
+	// header: chomping indicator and indentation indicator 1-9, in either order
+	Chomp chomp = CLIP;
 	int increment = 0;
 	while (true)
 	{
 		char c = self.peek();
-		if ((c == '-' || c == '+') && !chomp)
+		if ((c == '-' || c == '+') && chomp == CLIP)
 		{
-			chomp = c == '+' ? 1 : -1;
+			chomp = c == '+' ? KEEP : STRIP;
 		}
 		else if (c >= '1' && c <= '9' && !increment)
 		{
@@ -820,11 +822,8 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 		breaks = self.block_breaks(indent, min_indent, &max_empty)!;
 	}
 	// chomping of the final line break and the trailing empty lines
-	if (chomp >= 0 && line_break) buf.append_char('\n');
-	if (chomp > 0)
-	{
-		for (int i = 0; i < breaks; i++) buf.append_char('\n');
-	}
+	if (chomp != STRIP && line_break) buf.append_char('\n');
+	if (chomp == KEEP) for (int i = 0; i < breaks; i++) buf.append_char('\n');
 	return buf.str_view();
 }
 
