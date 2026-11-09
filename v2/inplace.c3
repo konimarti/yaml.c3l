@@ -28,19 +28,13 @@ fn void InPlaceWriter.init(&self, char[] buf, uint orig_start, Arena* arena, All
 	};
 }
 
-fn void? InPlaceWriter.ensure_arena_cap(&self, uint extra)
-{
-	if (!self.arena || !self.spill) return NO_SPACE~;
-	self.arena.ensure_cap(extra)!;
-}
-
 fn void? InPlaceWriter.start_spill(&self, uint needed)
 {
 	if (!self.spill || !self.arena) return NO_SPACE~;
 	self.spilled = true;
 	self.arena_start = self.arena.len;
 	uint prefix_len = self.w - self.orig_start;
-	self.ensure_arena_cap(prefix_len + needed)!;
+	self.arena.ensure_cap(prefix_len + needed)!;
 	if (prefix_len > 0)
 	{
 		self.arena.append_bytes(self.buf.ptr + self.orig_start, prefix_len);
@@ -51,7 +45,7 @@ fn void? InPlaceWriter.append_char(&self, char c, uint limit)
 {
 	if (self.spilled)
 	{
-		self.ensure_arena_cap(1)!;
+		self.arena.ensure_cap(1)!;
 		self.arena.append_char(c);
 		return;
 	}
@@ -70,7 +64,7 @@ fn void? InPlaceWriter.append_slice(&self, char[] s, uint limit)
 	uint slen = (uint)s.len;
 	if (self.spilled)
 	{
-		self.ensure_arena_cap(slen)!;
+		self.arena.ensure_cap(slen)!;
 		self.arena.append_bytes(s.ptr, slen);
 		return;
 	}
@@ -87,12 +81,11 @@ fn void? InPlaceWriter.append_slice(&self, char[] s, uint limit)
 fn void? InPlaceWriter.append_char32(&self, Char32 c, uint limit)
 {
 	char[4] enc;
-	sz? len = conv::char32_to_utf8(c, &enc);
-	if (catch len) return;
+	sz len = conv::char32_to_utf8(c, &enc)!;
 	uint ulen = (uint)len;
 	if (self.spilled)
 	{
-		self.ensure_arena_cap(ulen)!;
+		self.arena.ensure_cap(ulen)!;
 		self.arena.append_bytes(&enc, ulen);
 		return;
 	}
