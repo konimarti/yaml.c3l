@@ -1,3 +1,5 @@
 build/
 test-suite/
 tags
+bench/data/
+bench/out.csv
