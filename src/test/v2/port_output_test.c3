@@ -24,7 +24,8 @@ fn void path_segments() @test => @pool()
 	{
 		test::@error(data.get(path), NOT_FOUND);
 	}
-	assert(data["a"].exists(), "the empty path is the whole document");
+	Node root = data.get("")!!;
+	assert(root["a"].exists(), "the empty path is the whole document");
 }
 
 fn void checked_json_writer() @test => @pool()

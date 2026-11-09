@@ -165,6 +165,8 @@ fn void deep_alias_limit() @test => @pool()
 	}
 }
 
+// Anchored nodes are not copied, so nested anchors stay linear in the input
+// (before: one copy per enclosing anchor, about 3 million nodes and seconds for this input)
 fn void nested_anchors_are_not_copied() @test => @pool()
 {
 	DString s = dstring::temp();
@@ -182,6 +184,7 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 	test::eq(data.get(path.str_view())!!.as_string()!!, "x");
 }
 
+// An anchored key and an anchored replaced value can still be aliased
 fn void anchors_outside_the_tree() @test => @pool()
 {
 	Yaml data = yaml2::from_string("&k a: 1\nb: *k\nc: &v [1]\nc: 2\nd: *v\n", mem, false)!!;
@@ -191,6 +194,7 @@ fn void anchors_outside_the_tree() @test => @pool()
 	test::eq(data.get("d.0")!!.as_int()!!, 1);
 }
 
+// An array index is plain digits
 fn void index_segments() @test => @pool()
 {
 	Yaml data = yaml2::from_string("a: [x, y, z]\n", mem, false)!!;
@@ -221,6 +225,7 @@ fn void parse_by_input_type() @test => @pool()
 	test::@error(yaml2::parse("a: [1\n", mem, false), parser::UNCLOSED_FLOW);
 }
 
+// no free: the temp allocator releases it (the test runner reports leaks of other allocators)
 fn void tparse_uses_tmem() @test => @pool()
 {
 	Yaml a = yaml2::tparse("k: v\n", false)!!;

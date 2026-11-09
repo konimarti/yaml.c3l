@@ -2,14 +2,36 @@
 module yaml2::port_leak_test;
 
 import std::io, std::core::mem::allocators;
-import yaml2, yaml2::parser;
+import yaml2, yaml2::parser, yaml2::testing;
 
+// Parses `input` with a tracking allocator. A success is freed twice (the second free must do
+// nothing). Either way nothing may be left allocated.
 fn void check(String input, fault expected = {}) @private
 {
 	TrackingAllocator tracker;
 	tracker.init(mem);
 	defer tracker.free();
 	Yaml? data = yaml2::from_string(input, &tracker, false);
+	if (catch err = data)
+	{
+		assert(expected && err == expected, "unexpected result for %s: %s", input, err);
+	}
+	else
+	{
+		assert(!expected, "expected an error for %s", input);
+		data.free();
+		data.free();
+	}
+	assert(tracker.allocation_count() == 0, "leak: %d allocations left for %s", tracker.allocation_count(), input);
+}
+
+fn void check_buffer(String input, fault expected = {}) @private
+{
+	TrackingAllocator tracker;
+	tracker.init(mem);
+	defer tracker.free();
+	char[] buf = testing::writable(input);
+	Yaml? data = yaml2::from_buffer(buf, &tracker, false);
 	if (catch err = data)
 	{
 		assert(expected && err == expected, "unexpected result for %s: %s", input, err);
@@ -65,4 +87,21 @@ fn void errors_during_the_build() @test => @pool()
 	for (int i = 0; i < 40; i++) ok_then_bad.appendf("%*c- [*x, *x]\n", 2, ' ');
 	ok_then_bad.append("c: *missing\n");
 	check(ok_then_bad.str_view(), yaml2::UNDEFINED_ALIAS);
+}
+
+fn void spilled_scalars_and_from_buffer() @test => @pool()
+{
+	// Spilled scalars (\L and \P expand to 3-byte UTF-8, triggering arena spill)
+	check("k: \"\\L\"\n");
+	check("k: \"\\P\"\n");
+	check("k: \"\\L\\P\\L\\P\"\n");
+	check("k: \"\\L\", bad\n", parser::SYNTAX_ERROR);
+	check("a: &x \"\\L\"\nb: *missing\n", yaml2::UNDEFINED_ALIAS);
+
+	// from_buffer paths (owns_input = false)
+	check_buffer("a: 1\nb: [2, 3]\nc: {d: 4}\n");
+	check_buffer("k: \"\\L\\P\"\n");
+	check_buffer("a: [1, 2\n", parser::UNCLOSED_FLOW);
+	check_buffer("a: *nope\n", yaml2::UNDEFINED_ALIAS);
+	check_buffer("a: 1\nb: [x, y]\nbad\n", parser::MISSING_COLON);
 }
