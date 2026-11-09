@@ -6,58 +6,93 @@ import std::collections::list;
 
 import yaml::parser;
 
-faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS;
+faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS, LIMIT_EXCEEDED;
 
-struct YamlData (Printable)
+struct YamlData (Printable)   // to_format prints JSON, one document per line
 {
 	List {Object*} docs;
 	Allocator allocator;
 }
 
-fn sz? YamlData.to_format(&self, Formatter* formatter) @dynamic
+fn sz? YamlData.to_format(&self, Formatter* f) @dynamic
 {
 	sz n = 0;
-	foreach (obj : self.docs)
-	{
-		if (obj != null)
-		{
-			n += obj.to_format(formatter)!;
-		}
-		else
-		{
-			n += formatter.printf("null")!;
-		}
-		n += formatter.printf("\n")!;
-	}
+	foreach (o : self.docs) n += write_json(f, o)! + f.print("\n")!;
 	return n;
 }
 
-fn Object*? build_node(Parser* p, Event e, Allocator a)
+// Prints an Object as compact JSON (Object.to_format does not escape strings).
+struct Json (Printable)
 {
-	switch (e.type)
+	Object* o;
+}
+
+fn sz? Json.to_format(&self, Formatter* f) @dynamic => write_json(f, self.o);
+
+fn sz? write_json(Formatter* f, Object* o)
+{
+	switch
 	{
-		case SCALAR: return object::new_string(a, e.value);
-		case SEQUENCE_START:
-			Object* seq = object::new_array(a);
-			defer catch seq.free();
-			while (true)
+		case o.is_null(): return f.print("null");
+		case o.is_bool(): return f.print(o.b ? "true" : "false");
+		case o.is_int(): return f.printf("%d", o.i);
+		case o.is_float(): return write_float(f, o.f);
+		case o.is_string(): return write_string(f, o.s);
+		case o.is_array():
+			sz n = f.print("[")!;
+			for (sz i = 0; i < o.get_len(); i++)
 			{
-				Event n = p.next()!;
-				if (n.type == SEQUENCE_END) return seq;
-				seq.push_object(build_node(p, n, a)!);
+				if (i) n += f.print(",")!;
+				n += write_json(f, o.get_at(i))!;
 			}
-		case MAPPING_START:
-			Object* map = object::new_obj(a);
-			defer catch map.free();
-			while (true)
+			return n + f.print("]")!;
+		default:
+			sz n = f.print("{")!;
+			if (o.type != void)
 			{
-				Event key_ev = p.next()!;
-				if (key_ev.type == MAPPING_END) return map;
-				if (key_ev.type != SCALAR) return parser::SYNTAX_ERROR~;
-				map.set(key_ev.value, build_node(p, p.next()!, a)!);
+				foreach (i, key : o.map.keys(tmem))
+				{
+					if (i) n += f.print(",")!;
+					n += write_string(f, key)! + f.print(":")!;
+					n += write_json(f, o.get(key)!)!;
+				}
 			}
-		default: return parser::SYNTAX_ERROR~;
+			return n + f.print("}")!;
 	}
+}
+
+// The shortest of %.15g, %.16g, %.17g that reads back as the same double; no JSON for inf/nan.
+fn sz? write_float(Formatter* f, double d)
+{
+	if (d != d || d == double::inf || d == -double::inf) return f.print("null");
+	String s;
+	foreach (format : (String[]){ "%.15g", "%.16g", "%.17g" })
+	{
+		s = string::tformat(format, d);
+		if (s.to_double()!! == d) break;
+	}
+	return f.print(s);
+}
+
+// RFC 8259 string escapes.
+fn sz? write_string(Formatter* f, String s)
+{
+	sz n = f.print("\"")!;
+	foreach (c : s)
+	{
+		switch (c)
+		{
+			case '"': n += f.print(`\"`)!;
+			case '\\': n += f.print(`\\`)!;
+			case '\n': n += f.print(`\n`)!;
+			case '\t': n += f.print(`\t`)!;
+			case '\r': n += f.print(`\r`)!;
+			case '\b': n += f.print(`\b`)!;
+			case '\f': n += f.print(`\f`)!;
+			default: n += c < 0x20 ? f.printf("\\u%04x", c)! : f.print_char(c)!;
+		}
+	}
+	return n + f.print("\"")!;
 }
 
 // The parser emits exactly one node (maybe an empty scalar) per document.
@@ -76,7 +111,8 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 			case STREAM_END: return data;
 			case SCALAR:
 			case SEQUENCE_START:
-			case MAPPING_START: data.docs.push(build_node(&p, ev, allocator)!);
+			case MAPPING_START:
+			case ALIAS: data.docs.push(build_document(&p, ev, allocator)!);
 			default: break;
 		}
 	}
@@ -86,8 +122,7 @@ fn YamlData? from_stream(InStream reader, Allocator allocator = mem, bool verbos
 {
 	ByteWriter writer;
 	io::copy_to(reader, writer.tinit())!;
-	String s = writer.str_view().copy(allocator);
-	return from_string(s, allocator, verbose);
+	return from_string(writer.str_view(), allocator, verbose);
 }
 
 fn YamlData? from_file(String filename, Allocator allocator = mem, bool verbose = true)
@@ -97,16 +132,33 @@ fn YamlData? from_file(String filename, Allocator allocator = mem, bool verbose 
 	return from_stream(&f, allocator, verbose)!;
 }
 
-fn Object*? YamlData.get(&self, String path) @operator([])
-{
-	if (self.docs.size == 0) return NOT_FOUND~;
-	return self.docs[0].get(path);
-}
+// "a.b.0": map keys and array indexes separated by '.'; document 0.
+fn Object*? YamlData.get(&self, String path) @operator([]) => self.get_in(0, path);
 
 fn Object*? YamlData.get_in(&self, sz doc, String path)
 {
 	if (doc >= self.docs.size) return NOT_FOUND~;
-	return self.docs[doc].get(path);
+	Object* o = self.docs[doc];
+	if (!path.len) return o;
+	foreach (segment : path.tsplit("."))
+	{
+		if (o.is_array())
+		{
+			int? i = segment.to_int();
+			if (catch i) return NOT_FOUND~;
+			if (i < 0 || i >= o.get_len()) return NOT_FOUND~;
+			o = o.get_at(i);
+		}
+		else if (o.is_map())
+		{
+			o = o.get(segment)!;
+		}
+		else
+		{
+			return NOT_FOUND~;
+		}
+	}
+	return o;
 }
 
 fn sz YamlData.len(&self) @operator(len)

@@ -56,7 +56,7 @@ fn int main(String[] args)
 				io::eprintfn("Invalid YAML: %s", err);
 				return 1;
 			}
-			io::printn(data);
+			io::print(data);   // one JSON line per document
 			data.free();
 			return 0;
 		}

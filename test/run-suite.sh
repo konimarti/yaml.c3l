@@ -35,5 +35,36 @@ done < <(find test-suite/ -name in.yaml -not -path '*/tags/*' -not -path '*/name
 echo "valid PASS $vp/$((vp+vf))  error PASS $ep/$((ep+ef))"
 echo "PASS $((vp+ep)) / FAIL $((vf+ef)) / $((vp+vf+ep+ef))"
 [ $verbose -eq 1 ] && printf '%s\n' "${failed[@]}"
-[ $json -eq 1 ] && echo "json: not implemented before M6"
+if [ $json -eq 1 ]; then
+	if ! command -v python3 >/dev/null; then
+		echo "json: skipped (python3 not found)"
+		exit 0
+	fi
+	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+	# semantic comparison of two streams of concatenated JSON documents
+	cat > "$tmp/cmp.py" <<'PY'
+import json, sys
+def docs(text):
+    dec, i, out = json.JSONDecoder(), 0, []
+    while True:
+        while i < len(text) and text[i].isspace(): i += 1
+        if i >= len(text): return out
+        v, i = dec.raw_decode(text, i)
+        out.append(v)
+sys.exit(0 if docs(open(sys.argv[1]).read()) == docs(open(sys.argv[2]).read()) else 1)
+PY
+	jp=0; jt=0; jfailed=()
+	while read -r dir; do
+		[ -f "$dir/error" ] || [ ! -f "$dir/in.json" ] && continue
+		jt=$((jt+1))
+		if timeout 10 "$bin" -j < "$dir/in.yaml" > "$tmp/out.json" 2>/dev/null &&
+			python3 -I "$tmp/cmp.py" "$dir/in.json" "$tmp/out.json" 2>/dev/null; then
+			jp=$((jp+1))
+		else
+			jfailed+=("json ${dir#test-suite/}")
+		fi
+	done < <(find test-suite/ -name in.yaml -not -path '*/tags/*' -not -path '*/name/*' -printf '%h\n' | sort)
+	echo "json PASS $jp/$jt"
+	[ $verbose -eq 1 ] && [ ${#jfailed[@]} -gt 0 ] && printf '%s\n' "${jfailed[@]}"
+fi
 exit 0
