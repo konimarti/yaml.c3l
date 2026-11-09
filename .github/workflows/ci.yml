@@ -61,6 +61,9 @@ jobs:
       - name: Build yamlv
         run: c3c build yamlv
 
+      - name: Build bench
+        run: c3c build bench -O2
+
       - name: Fetch yaml-test-suite
         run: |
           git -c core.autocrlf=false clone --depth 1 --branch data \
