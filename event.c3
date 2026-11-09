@@ -10,6 +10,7 @@ faultdef SYNTAX_ERROR, LIMIT_EXCEEDED, INVALID_CHARACTER, INVALID_INDENTATION, M
 
 // Limits for untrusted input; exceeding one fails with LIMIT_EXCEEDED.
 const int MAX_DEPTH = 512;              // nesting depth: flow collections in the scanner, the built tree
+// (the scanner does O(flow depth) work per token: 3 MB at depth 500 take about 2 s)
 // The others are budgets for one from_* call: all documents of the stream together.
 const sz MAX_ALIAS_NODES = 1_000_000;   // nodes created by alias expansion
 const sz MAX_ALIAS_BYTES = 64 * 1024 * 1024;   // string and key bytes copied by alias expansion

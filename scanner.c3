@@ -13,7 +13,18 @@ enum TokenType : char
 
 // value: scalar text, anchor/alias name, tag suffix, YAML version, TAG prefix or directive name.
 // handle: tag handle ("" for a verbatim tag) or TAG directive handle.
-struct Token { TokenType type; Mark start; String value; String handle; ScalarStyle style; }
+// implied_*: the token is a simple key, preceded by a BLOCK_MAPPING_START and/or a KEY that
+// fetch_value found later; flags instead of an O(n) insert into a long queue.
+struct Token
+{
+	TokenType type;
+	Mark start;
+	String value;
+	String handle;
+	ScalarStyle style;
+	bool implied_mapping_start;
+	bool implied_key;
+}
 
 // A possible implicit key: the token that may become a KEY when a ':' follows on the same line.
 struct SimpleKey
@@ -159,13 +170,20 @@ fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 
 fn Token? Scanner.next_token(&self)
 {
-	self.fetch_more_tokens()!;
-	self.tokens_taken++;
-	Token t = self.tokens[self.head++];   // the queue is reset once it is drained
-	if (self.head == self.tokens.len())
+	Token t = self.peek_token()!;
+	Token* head = self.tokens.get_ref(self.head);
+	switch
 	{
-		self.tokens.clear();
-		self.head = 0;
+		case head.implied_mapping_start: head.implied_mapping_start = false;   // the head stays
+		case head.implied_key: head.implied_key = false;
+		default:
+			self.tokens_taken++;
+			self.head++;
+			if (self.head == self.tokens.len())   // the queue is reset once it is drained
+			{
+				self.tokens.clear();
+				self.head = 0;
+			}
 	}
 	return t;
 }
@@ -173,10 +191,14 @@ fn Token? Scanner.next_token(&self)
 // The position in `tokens` of the absolute token index `number`.
 fn sz Scanner.queue_index(&self, sz number) @inline => self.head + number - self.tokens_taken;
 
+// The head token, or the BLOCK_MAPPING_START / KEY implied before it.
 fn Token? Scanner.peek_token(&self)
 {
 	self.fetch_more_tokens()!;
-	return self.tokens[self.head];
+	Token t = self.tokens[self.head];
+	if (t.implied_mapping_start) return { .type = T_BLOCK_MAPPING_START, .start = t.start };
+	if (t.implied_key) return { .type = T_KEY, .start = t.start };
+	return t;
 }
 
 // Fetch until the head token can no longer become a KEY.
@@ -301,22 +323,14 @@ fn void Scanner.scan_to_next_token(&self)
 
 // ---- indentation ---------------------------------------------------------
 
-// Open a block collection at `column` if it is deeper than the current indent.
-// `number` < 0: append the token; otherwise insert it at that absolute token index.
-fn void Scanner.roll_indent(&self, int column, TokenType type, Mark m, sz number = -1)
+// Open a block collection at `column` if it is deeper than the current indent; the caller
+// adds its start token if this returns true.
+fn bool Scanner.roll_indent(&self, int column)
 {
-	if (self.indent >= column) return;
+	if (self.indent >= column) return false;
 	self.indents.push(self.indent);
 	self.indent = column;
-	Token t = { .type = type, .start = m };
-	if (number < 0)
-	{
-		self.tokens.push(t);
-	}
-	else
-	{
-		self.tokens.insert_at(self.queue_index(number), t);
-	}
+	return true;
 }
 
 fn void Scanner.unroll_indent(&self, int column)
@@ -388,7 +402,7 @@ fn void? Scanner.fetch_indicator(&self, TokenType token, TokenType collection, S
 		if (self.indent < self.col())
 		{
 			if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, not_here)~;
-			self.roll_indent(self.col(), collection, self.mark);
+			if (self.roll_indent(self.col())) self.push(collection, self.mark);
 		}
 	}
 	self.remove_simple_key()!;
@@ -412,8 +426,9 @@ fn void? Scanner.fetch_value(&self)
 				return self.error(k.mark, "mapping values are not allowed here")~;
 			}
 		}
-		self.tokens.insert_at(self.queue_index(k.token_number), { .type = T_KEY, .start = k.mark });
-		if (!self.flow_level) self.roll_indent(k.mark.column - 1, T_BLOCK_MAPPING_START, k.mark, k.token_number);
+		Token* key = self.tokens.get_ref(self.queue_index(k.token_number));
+		key.implied_key = true;
+		if (!self.flow_level) key.implied_mapping_start = self.roll_indent(k.mark.column - 1);
 		k.possible = false;
 		self.simple_key_allowed = false;
 		self.compact_ok = false;   // "a: - b", "a: b: c"
@@ -422,7 +437,7 @@ fn void? Scanner.fetch_value(&self)
 	{
 		// value of an explicit '?' key, or an empty key
 		if (!self.simple_key_allowed) return self.error(self.mark, "mapping values are not allowed here")~;
-		self.roll_indent(self.col(), T_BLOCK_MAPPING_START, self.mark);
+		if (self.roll_indent(self.col())) self.push(T_BLOCK_MAPPING_START, self.mark);
 		self.simple_key_allowed = true;
 		self.compact_ok = self.peek(1) == ' ';
 	}
