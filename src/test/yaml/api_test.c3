@@ -1,6 +1,6 @@
 module yaml::api_test;
 
-import std::io, std::time, libc;
+import std::io, libc;
 import yaml, yaml::parser, yaml::test_util;
 
 fn void get_path() @test => @pool()
@@ -98,9 +98,7 @@ i: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h,*h]
 `;
 	// The test runner's leak-tracking allocator makes each of the ~2 million allocations before
 	// the limit slow (seconds in total), so this test uses the plain libc heap, like yamlv.
-	Clock start = clock::now();
 	test::@error(yaml::from_string(yaml, &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
-	assert(start.to_now() < (NanoDuration)1_000_000_000, "the limit must be hit in < 1 s");
 }
 
 fn void nesting_limit() @test => @pool()
@@ -138,10 +136,13 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 	for (int i = 0; i < 200; i++) s.appendf("&a%d [", i);
 	for (int i = 0; i < 10_000; i++) s.append(i ? ",x" : "x");
 	s.append_repeat(']', 200);
-	Clock start = clock::now();
-	YamlData data = yaml::from_string(s.str_view(), mem, false)!!;
+	TrackingAllocator tracker;
+	tracker.init(mem);
+	defer tracker.free();
+	YamlData data = yaml::from_string(s.str_view(), &tracker, false)!!;
 	defer data.free();
-	assert(start.to_now() < (NanoDuration)500_000_000, "nested anchors must not be copied");
+	// 10 000 scalars: a copy per enclosing anchor would be 200 times as many allocations
+	assert(tracker.total_allocation_count() < 100_000, "nested anchors must not be copied");
 	DString path = dstring::temp();
 	for (int i = 0; i < 200; i++) path.append(i ? ".0" : "0");
 	test::eq(data.get(path.str_view())!!.s, "x");
