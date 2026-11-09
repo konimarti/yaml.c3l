@@ -623,6 +623,7 @@ fn void? Builder.build_stream(&self)
 	bool in_doc = false;
 	bool doc_has_node = false;
 	bool doc_explicit = false;
+	uint doc_prev = 0;
 
 	while (true)
 	{
@@ -640,7 +641,8 @@ fn void? Builder.build_stream(&self)
 				if (in_doc && !doc_has_node)
 				{
 					uint doc_id = self.tree.new_node(SCALAR, style: PLAIN, schema: NULL, flags: doc_explicit ? F_EXPLICIT : 0);
-					self.tree.append(0, doc_id);
+					self.tree.append_after(0, doc_prev, doc_id);
+					doc_prev = doc_id;
 				}
 				in_doc = false;
 				doc_explicit = false;
@@ -653,7 +655,8 @@ fn void? Builder.build_stream(&self)
 				doc_has_node = true;
 				char doc_flags = doc_explicit ? F_EXPLICIT : 0;
 				NodeResult res = self.build_node(e, 0, 0, (Span){}, doc_flags)!;
-				self.tree.append(0, res.id);
+				self.tree.append_after(0, doc_prev, res.id);
+				doc_prev = res.id;
 			default:
 				break;
 		}

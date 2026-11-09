@@ -160,9 +160,11 @@ fn sz run_foreach_old(yaml::Yaml tree)
 fn sz run_foreach2(yaml2::Yaml tree)
 {
 	sz n = 0;
-	for (sz d = 0; d < tree.len(); d++)
+	if (!tree.tree) return 0;
+	uint child = tree.tree.nodes[0].first;
+	while (child != 0)
 	{
-		yaml2::Node doc = tree.doc(d);
+		yaml2::Node doc = (yaml2::Node){ tree.tree, child };
 		if (doc.is_map())
 		{
 			foreach (e : doc.entries()) n++;
@@ -171,6 +173,7 @@ fn sz run_foreach2(yaml2::Yaml tree)
 		{
 			foreach (x : doc.items()) n++;
 		}
+		child = tree.tree.nodes[child].next;
 	}
 	return n;
 }

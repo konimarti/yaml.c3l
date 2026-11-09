@@ -31,12 +31,15 @@ fn sz? write_node_json(Formatter* f, Node n)
 fn sz? write_yaml_json(Formatter* f, Yaml* y)
 {
 	sz n = 0;
-	sz count = y.len();
+	if (!y.tree) return 0;
 	sz key_budget = 0;
-	sz max_budget = parser::MAX_KEY_TEXT + ((y.tree && y.tree.input.len) ? parser::KEY_TEXT_PER_BYTE * y.tree.input.len : 0);
-	for (sz i = 0; i < count; i++)
+	sz max_budget = parser::MAX_KEY_TEXT + (y.tree.input.len ? parser::KEY_TEXT_PER_BYTE * y.tree.input.len : 0);
+	uint child = y.tree.nodes[0].first;
+	while (child != 0)
 	{
-		n += write_node_json_budget(f, y.doc(i), &key_budget, max_budget)! + f.print("\n")!;
+		Node doc = (Node){ y.tree, child };
+		n += write_node_json_budget(f, doc, &key_budget, max_budget)! + f.print("\n")!;
+		child = y.tree.nodes[child].next;
 	}
 	return n;
 }
