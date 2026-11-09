@@ -1,9 +1,9 @@
-// v2 tree builder. Card (b) owns this file.
+// YAML tree builder.
 module yaml;
 
 import std::math;
+import std::math::random;
 import std::io;
-import std::time;
 import yaml::parser;
 
 fn ulong splitmix64(ulong x) @inline
@@ -264,7 +264,8 @@ struct Builder
 
 fn void Builder.init(&self, Tree* tree, Parser* parser, Allocator a, bool verbose)
 {
-	ulong raw = ((ulong)(uptr)tree) ^ 0x9e3779b97f4a7c15UL ^ (ulong)(long)time::now().to_seconds();
+	char[32] e = random::entropy();
+	ulong raw = random::make_seed(ulong, &e) ^ ((ulong)(uptr)tree);
 	ulong seed = splitmix64(raw);
 	*self = {
 		.tree = tree,
