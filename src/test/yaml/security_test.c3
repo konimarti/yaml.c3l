@@ -130,3 +130,21 @@ fn void many_tag_directives() @test => @pool()
 	assert(events.ends_with("=VAL <tag:y:v> :x\n-DOC\n-STR"), "the handles are reset per document");
 	test::@error(test_util::events("%TAG !a! x\n%TAG !a! y\n--- a\n"), parser::INVALID_DIRECTIVE);
 }
+
+// S7: a byte order mark at the start is skipped; only printable characters in valid UTF-8 may
+// appear (before: the BOM became part of the first key, NUL was a blank, bad UTF-8 was copied)
+fn void input_validation() @test => @pool()
+{
+	YamlData data = yaml::from_string("\xef\xbb\xbfa: 1\n", mem, false)!!;
+	test::eq(data.get("a")!!.i, 1);
+	data.free();
+	test::eq(test_util::events("\xef\xbb\xbf# comment\n%YAML 1.2\n--- a", " ", false)!!, "+DOC --- =VAL :a -DOC");
+	String[*] invalid = {
+		"a:\0b", "-\0x", "a: \x01", "a: \x7f", "a: \"\xff\xfe\"", "a: \xc2\x80",
+		"a: \xed\xa0\x80" /* surrogate */, "a: \xc0\xaf" /* overlong */, "a: \xef\xbf\xbf", "a: \xe2\x82",
+	};
+	foreach (s : invalid) test::@error(yaml::from_string(s, mem, false), parser::INVALID_CHARACTER);
+	// TAB, NEL, other scripts and the \0 escape are fine
+	test::eq(test_util::scalar("a\tb \u0085 \u00e9 \U0001F600")!!, "a\tb \u0085 \u00e9 \U0001F600");
+	test::eq(test_util::scalar(`"\0"`)!!, "\0");
+}

@@ -2,7 +2,7 @@
 module yaml::parser;
 import std::io, std::collections::list;
 
-faultdef INVALID_INDENTATION, MISSING_COLON, INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE,
+faultdef INVALID_CHARACTER, INVALID_INDENTATION, MISSING_COLON, INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE,
 	INVALID_BLOCK_HEADER, UNCLOSED_FLOW, INVALID_DIRECTIVE, UNDEFINED_TAG_HANDLE;
 
 enum TokenType : char
@@ -34,6 +34,7 @@ struct Scanner
 {
 	String s;
 	Mark mark;
+	sz invalid;                // the first byte that may not appear in a YAML stream, or s.len
 	bool verbose;
 	List {Token} tokens;
 	sz tokens_taken;           // tokens already handed to the parser
@@ -52,7 +53,9 @@ struct Scanner
 
 fn void Scanner.init(&self, String s, bool verbose = true)
 {
+	if (s.starts_with("\xef\xbb\xbf")) s = s[3..];   // a byte order mark is not content
 	*self = { .s = normalize_breaks(s), .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
+	self.invalid = first_invalid(self.s);
 	self.tokens.tinit();
 	self.indents.tinit();
 	self.keys.tinit();
@@ -83,6 +86,33 @@ fn String normalize_breaks(String s)
 	return out.str_view();
 }
 
+// YAML 1.2.2 5.1: the printable Unicode characters (TAB, LF, CR, no other C0/C1 control, no DEL,
+// surrogate, FFFE or FFFF).
+fn bool is_printable(Char32 c)
+{
+	return c == '\t' || c == '\n' || c == '\r' || (c >= 0x20 && c <= 0x7e) || c == 0x85
+		|| (c >= 0xa0 && c <= 0xd7ff) || (c >= 0xe000 && c <= 0xfffd) || c >= 0x10000;
+}
+
+// The position of the first byte that is not valid UTF-8 (5.2) or not printable, or s.len.
+fn sz first_invalid(String s)
+{
+	for (sz i = 0; i < s.len;)
+	{
+		if (s[i] >= 0x20 && s[i] < 0x7f)   // most of the input
+		{
+			i++;
+			continue;
+		}
+		sz size = s.len - i;
+		Char32? c = conv::utf8_to_char32(&s[i], &size);
+		if (catch c) return i;
+		if (!is_printable(c)) return i;
+		i += size;
+	}
+	return s.len;
+}
+
 fn int Scanner.col(&self) @inline => self.mark.column - 1;
 fn bool Scanner.at_end(&self) @inline => self.mark.pos >= self.s.len;
 fn char Scanner.peek(&self, sz offset = 0)
@@ -90,7 +120,7 @@ fn char Scanner.peek(&self, sz offset = 0)
 	sz i = self.mark.pos + offset;
 	return i < self.s.len ? self.s[i] : '\0';
 }
-fn bool is_blankz(char c) => c.is_blank() || c == '\n' || c == '\0';   // no '\r' after normalize_breaks
+fn bool is_blankz(char c) => c.is_blank() || c == '\n' || c == '\0';   // '\0': the end; no '\r' after normalize_breaks
 
 fn void Scanner.advance(&self)
 {
@@ -178,6 +208,12 @@ fn void? Scanner.fetch_next_token(&self)
 {
 	if (!self.stream_start_done)
 	{
+		if (self.invalid < self.s.len)
+		{
+			while (self.mark.pos < self.invalid) self.advance();
+			String msg = self.s[self.invalid] < 0x80 ? "control characters are not allowed" : "invalid UTF-8 or a non-printable character";
+			return self.error(self.mark, msg, INVALID_CHARACTER)~;
+		}
 		self.stream_start_done = true;
 		self.simple_key_allowed = true;
 		self.compact_ok = true;
