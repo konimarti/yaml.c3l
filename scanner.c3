@@ -390,6 +390,8 @@ fn void? Scanner.fetch_value(&self)
 // '[' or '{': the collection may itself be an implicit key ("[a]: b").
 fn void? Scanner.fetch_flow_start(&self, TokenType type)
 {
+	// also bounds the per-token work over `keys`, which grows with the flow level
+	if (self.flow_level >= MAX_DEPTH) return self.error(self.mark, "flow nesting depth limit exceeded", LIMIT_EXCEEDED)~;
 	self.save_simple_key()!;
 	self.keys.push({ .flow_map = type == T_FLOW_MAPPING_START });
 	self.flow_level++;

@@ -80,15 +80,15 @@ a: "x\q"
 Error messages can be silenced by setting the optional `verbose` to `false` in any of the
 `yaml::from_*` functions. The first error stops parsing.
 
-### Alias and depth limits
+### Limits
 
-Building a document fails with `yaml::LIMIT_EXCEEDED` when:
-* more than `yaml::MAX_ALIAS_NODES` (1,000,000) nodes are created by alias expansion in a
-  single document, or
-* the tree is nested deeper than `yaml::MAX_DEPTH` (512) levels, including through aliases.
-
-The event parser (`Parser.next`, `yamlv -e`) does not expand aliases and has no depth
-limit.
+The limits for untrusted input are constants in `yaml::parser`. Exceeding one fails with
+`parser::LIMIT_EXCEEDED`:
+* `parser::MAX_DEPTH` (512): nesting depth. The event parser (`Parser.next`, `yamlv -e`)
+  checks flow collections; building a document checks the whole tree, including the parts
+  that come from aliases.
+* `parser::MAX_ALIAS_NODES` (1,000,000): nodes created by alias expansion in a single
+  document.
 
 ### Command-line tool
 
