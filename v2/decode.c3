@@ -27,8 +27,8 @@ fn void DecodeCtx.push_key(&self, String name) @inline
 	if (self.depth < self.frames.len)
 	{
 		self.frames[self.depth] = { .is_index = false, .name = name };
-		self.depth++;
 	}
+	self.depth++;
 }
 
 fn void DecodeCtx.push_index(&self, sz idx) @inline
@@ -36,8 +36,8 @@ fn void DecodeCtx.push_index(&self, sz idx) @inline
 	if (self.depth < self.frames.len)
 	{
 		self.frames[self.depth] = { .is_index = true, .index = idx };
-		self.depth++;
 	}
+	self.depth++;
 }
 
 fn void DecodeCtx.pop(&self) @inline
@@ -200,6 +200,11 @@ fn Type? decode_node_internal(Node n, DecodeCtx* ctx) <Type> @private
 fn Type? decode_node_entry(Node n, Allocator allocator, bool verbose, bool borrowed) <Type> @private
 {
 	if (!n.exists() || n.kind() == MISSING) return NOT_FOUND~;
+	if (allocator == tmem)
+	{
+		DecodeCtx ctx = { .allocator = allocator, .verbose = verbose, .borrowed = borrowed };
+		return decode_node_internal{Type}(n, &ctx);
+	}
 	@pool()
 	{
 		DecodeCtx ctx = { .allocator = allocator, .verbose = verbose, .borrowed = borrowed };
