@@ -31,7 +31,7 @@ struct Scanner
 {
 	String s;
 	Mark mark;
-	sz invalid;                // the first byte that may not appear in a YAML stream, or s.len
+	sz invalid_at;             // the first byte that may not appear in a YAML stream, or s.len
 	bool verbose;
 	List {Token} tokens;
 	sz tokens_taken;           // tokens already handed to the parser
@@ -52,7 +52,7 @@ fn void Scanner.init(&self, String s, bool verbose = true)
 {
 	if (s.starts_with("\xef\xbb\xbf")) s = s[3..];   // a byte order mark is not content
 	*self = { .s = normalize_breaks(s), .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
-	self.invalid = first_invalid(self.s);
+	self.invalid_at = first_invalid(self.s);
 	self.tokens.tinit();
 	self.indents.tinit();
 	self.keys.tinit();
@@ -205,10 +205,10 @@ fn void? Scanner.fetch_next_token(&self)
 {
 	if (!self.stream_start_done)
 	{
-		if (self.invalid < self.s.len)
+		if (self.invalid_at < self.s.len)
 		{
-			while (self.mark.pos < self.invalid) self.advance();
-			String msg = self.s[self.invalid] < 0x80 ? "control characters are not allowed" : "invalid UTF-8 or a non-printable character";
+			while (self.mark.pos < self.invalid_at) self.advance();
+			String msg = self.s[self.invalid_at] < 0x80 ? "control characters are not allowed" : "invalid UTF-8 or a non-printable character";
 			return self.error(self.mark, msg, INVALID_CHARACTER)~;
 		}
 		self.stream_start_done = true;

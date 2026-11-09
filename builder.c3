@@ -14,10 +14,10 @@ struct Builder
 {
 	Parser* parser;
 	Allocator allocator;
-	sz alias_nodes;
-	sz alias_bytes;
-	sz key_text;
-	int depth;
+	sz alias_nodes;   // nodes created by alias expansion (MAX_ALIAS_NODES)
+	sz alias_bytes;   // string and key bytes copied by alias expansion (MAX_ALIAS_BYTES)
+	sz key_text;      // bytes of JSON text made for collection keys (MAX_KEY_TEXT)
+	int depth;        // nesting depth of the current node (MAX_DEPTH)
 	HashMap {String, Object*} anchors;   // the anchored nodes (owned by the tree or by `dropped`)
 	List {Object*} dropped;              // nodes taken out of the tree: replaced values and key nodes
 }
