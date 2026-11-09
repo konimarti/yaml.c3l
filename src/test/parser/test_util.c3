@@ -1,8 +1,8 @@
 // Helpers shared by the parser tests.
 module yaml::test_util;
 
-import std::io;
-import yaml::parser;
+import std::io, libc;
+import yaml, yaml::parser;
 
 // The events of `yaml` as test.event lines joined by `sep`. `stream = false` leaves out
 // +STR/-STR, `docs = false` also +DOC/-DOC.
@@ -36,4 +36,28 @@ fn String? scalar(String yaml)
 		if (e.type == SCALAR) return e.value;
 		if (e.type == STREAM_END) return NOT_FOUND~;
 	}
+}
+
+// What from_string(yaml, verbose) writes to io::stderr() (in tmem); `f` gets its fault.
+fn String stderr_of(String yaml, bool verbose, fault* f = null)
+{
+	CFile tmp = libc::tmpfile();
+	defer libc::fclose(tmp);
+	File saved = *io::stderr();
+	*io::stderr() = file::from_handle(tmp);
+	YamlData? data = yaml::from_string(yaml, mem, verbose);
+	*io::stderr() = saved;
+	if (catch err = data)
+	{
+		if (f) *f = err;
+	}
+	else
+	{
+		data.free();
+	}
+	sz len = libc::ftell(tmp);
+	char[] buf = mem::talloc_array(char, len);
+	libc::rewind(tmp);
+	libc::fread(buf.ptr, 1, (usz)len, tmp);
+	return (String)buf;
 }

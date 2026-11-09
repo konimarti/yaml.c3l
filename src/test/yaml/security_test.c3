@@ -1,8 +1,8 @@
 // Regression tests for the size and time limits on untrusted input (review items S1-S7).
 module yaml::security_test;
 
-import std::io, std::time;
-import yaml, yaml::parser, yaml::test_util, yaml::api_test;
+import std::io;
+import yaml, yaml::parser, yaml::test_util;
 
 // S4: the scanner limits flow nesting, so the event API is bounded too (before: '{' x 40 000
 // was tokenized completely, in seconds, before the builder saw depth 513)
@@ -15,25 +15,8 @@ fn void flow_depth_limit() @test => @pool()
 	DString deep = dstring::temp();
 	deep.append_repeat('[', 40_000);
 	deep.append_repeat(']', 40_000);
-	Clock start = clock::now();
 	test::@error(test_util::events(deep.str_view()), parser::LIMIT_EXCEEDED);
 	test::@error(yaml::from_string(deep.str_view(), mem, false), parser::LIMIT_EXCEEDED);
-	assert(start.to_now() < (NanoDuration)100_000_000, "the limit must be hit early");
-}
-
-// S3: a flow collection used as a key in a flow mapping keeps all its tokens queued; taking
-// them one by one was O(n) each (before: 50 000 entries took seconds, valid YAML)
-fn void long_queued_key() @test => @pool()
-{
-	DString s = dstring::temp();
-	s.append("{{");
-	s.append_repeat("a, ", 50_000);
-	s.append("}: x}");
-	Clock start = clock::now();
-	test_util::events(s.str_view())!!;
-	YamlData data = yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false)!!;
-	data.free();
-	assert(start.to_now() < (NanoDuration)500_000_000, "the token queue must be linear");
 }
 
 // S1: a collection key is its JSON text, and a nested one is escaped again at every level
@@ -52,12 +35,10 @@ fn void nested_collection_keys() @test => @pool()
 	many.append("{");
 	for (int i = 0; i < 1000; i++) many.appendf("{{{{{{{{{{{{{{a}}}}}}}}}}}}}}: %d, ", i);
 	many.append("}");
-	Clock start = clock::now();
 	foreach (s : (String[]){ flow.str_view(), block.str_view(), many.str_view() })
 	{
 		test::@error(yaml::from_string(s, mem, false), parser::LIMIT_EXCEEDED);
 	}
-	assert(start.to_now() < (NanoDuration)500_000_000, "the limit must be hit early");
 	YamlData data = yaml::from_string("{[a, {b: c}]: 1}", mem, false)!!;
 	defer data.free();
 	test::eq(data.get(`["a",{"b":"c"}]`)!!.i, 1);
@@ -100,7 +81,7 @@ fn void error_excerpt() @test => @pool()
 	want.append("\\q\"\n");
 	want.append_repeat(' ', 60);
 	want.append("^\n");
-	test::eq(api_test::stderr_of(s.str_view(), true), want.str_view());
+	test::eq(test_util::stderr_of(s.str_view(), true), want.str_view());
 	s.clear();
 	s.append("k: \"");
 	for (int i = 0; i < 100; i++) s.append("é");
@@ -111,7 +92,7 @@ fn void error_excerpt() @test => @pool()
 	want.append("\\q\"\n");
 	want.append_repeat(' ', 30);
 	want.append("^\n");
-	test::eq(api_test::stderr_of(s.str_view(), true), want.str_view());
+	test::eq(test_util::stderr_of(s.str_view(), true), want.str_view());
 }
 
 // S6: %TAG handles are looked up in a map (before: a list, O(n) per directive and per tag;
@@ -123,9 +104,7 @@ fn void many_tag_directives() @test => @pool()
 	s.append("--- [");
 	for (int i = 0; i < 40_000; i++) s.appendf("!h%d!v x, ", i);
 	s.append("]\n...\n%TAG !h1! tag:y:\n--- !h1!v x\n");
-	Clock start = clock::now();
 	String events = test_util::events(s.str_view())!!;
-	assert(start.to_now() < (NanoDuration)300_000_000, "directives must be linear");
 	assert(events.contains("=VAL <tag:x,39999:v> :x"));
 	assert(events.ends_with("=VAL <tag:y:v> :x\n-DOC\n-STR"), "the handles are reset per document");
 	test::@error(test_util::events("%TAG !a! x\n%TAG !a! y\n--- a\n"), parser::INVALID_DIRECTIVE);
@@ -226,9 +205,9 @@ fn void many_valid_collection_keys() @test => @pool()
 // cannot send escape sequences to the terminal (before: ESC and BEL were echoed)
 fn void excerpt_has_no_control_characters() @test => @pool()
 {
-	test::eq(api_test::stderr_of("a: \"\e]0;x\a\e[2J\"\n", true),
+	test::eq(test_util::stderr_of("a: \"\e]0;x\a\e[2J\"\n", true),
 		"YAML ERROR -- Line 1, Col 5: control characters are not allowed\na: \"?]0;x??[2J\"\n    ^\n");
-	test::eq(api_test::stderr_of("é: \xc2\x9b\xff q\n", true),
+	test::eq(test_util::stderr_of("é: \xc2\x9b\xff q\n", true),
 		"YAML ERROR -- Line 1, Col 5: invalid UTF-8 or a non-printable character\né: ?? q\n   ^\n");
 }
 

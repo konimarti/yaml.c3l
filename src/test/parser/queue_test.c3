@@ -23,3 +23,23 @@ fn void key_is_not_inserted() @test => @pool()
 	test::eq(test_util::events("[a]: x\nk: {[b]: y}\n", " ", false, false)!!,
 		"+MAP +SEQ [] =VAL :a -SEQ =VAL :x =VAL :k +MAP {} +SEQ [] =VAL :b -SEQ =VAL :y -MAP -MAP");
 }
+
+// S3: next_token moves a head index instead of List.pop_first, a memmove of the whole queue
+// (before: a 600 KB flow-map key, valid YAML, took a minute)
+fn void next_token_does_not_shift_the_queue() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("{{");
+	s.append_repeat("a, ", 1000);
+	s.append("}: x}");
+	Scanner scanner;
+	scanner.init(s.str_view(), false);
+	scanner.next_token()!!;   // STREAM_START
+	scanner.next_token()!!;   // '{'
+	scanner.next_token()!!;   // the implied KEY of "{a, …}"
+	sz queued = scanner.tokens.len();
+	assert(queued > 2000, "the whole key is queued");
+	for (int i = 0; i < 1000; i++) scanner.next_token()!!;
+	test::eq(scanner.tokens.len(), queued);   // the taken tokens stay until the queue is drained
+	assert(test_util::events(s.str_view(), " ", false, false)!!.ends_with("=VAL :a =VAL : -MAP =VAL :x -MAP"));
+}

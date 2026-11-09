@@ -1,7 +1,7 @@
 module yaml::api_test;
 
 import std::io, std::time, libc;
-import yaml, yaml::parser;
+import yaml, yaml::parser, yaml::test_util;
 
 fn void get_path() @test => @pool()
 {
@@ -54,41 +54,17 @@ fn void undefined_alias() @test => @pool()
 	test::@error(yaml::from_string("&x [*x]\n", mem, false), yaml::UNDEFINED_ALIAS);
 }
 
-// What from_string(yaml, verbose) writes to io::stderr() (in tmem); `f` gets its fault.
-fn String stderr_of(String yaml, bool verbose, fault* f = null)
-{
-	CFile tmp = libc::tmpfile();
-	defer libc::fclose(tmp);
-	File saved = *io::stderr();
-	*io::stderr() = file::from_handle(tmp);
-	YamlData? data = yaml::from_string(yaml, mem, verbose);
-	*io::stderr() = saved;
-	if (catch err = data)
-	{
-		if (f) *f = err;
-	}
-	else
-	{
-		data.free();
-	}
-	sz len = libc::ftell(tmp);
-	char[] buf = mem::talloc_array(char, len);
-	libc::rewind(tmp);
-	libc::fread(buf.ptr, 1, (usz)len, tmp);
-	return (String)buf;
-}
-
 fn void quiet_errors() @test => @pool()
 {
-	test::eq(stderr_of("a: [b\n", false).len, 0);
-	test::eq(stderr_of("a: *x\n", false).len, 0);
-	assert(stderr_of("a: [b\n", true).len > 0, "verbose errors are printed");
+	test::eq(test_util::stderr_of("a: [b\n", false).len, 0);
+	test::eq(test_util::stderr_of("a: *x\n", false).len, 0);
+	assert(test_util::stderr_of("a: [b\n", true).len > 0, "verbose errors are printed");
 }
 
 fn void error_report_format() @test => @pool()
 {
 	fault f;
-	test::eq(stderr_of("k: v\na: \"x\\q\"\nz: 1\n", true, &f),
+	test::eq(test_util::stderr_of("k: v\na: \"x\\q\"\nz: 1\n", true, &f),
 		"YAML ERROR -- Line 2, Col 6: invalid escape sequence\na: \"x\\q\"\n     ^\n");
 	test::eq(f, parser::INVALID_ESCAPE);
 }
@@ -102,9 +78,9 @@ fn void every_fault_is_reported() @test => @pool()
 	foreach (i, input : inputs)
 	{
 		fault f;
-		test::eq(stderr_of(input, false, &f).len, 0);
+		test::eq(test_util::stderr_of(input, false, &f).len, 0);
 		test::eq(f, faults[i]);
-		assert(stderr_of(input, true).starts_with("YAML ERROR -- Line "), "the error is printed with its position");
+		assert(test_util::stderr_of(input, true).starts_with("YAML ERROR -- Line "), "the error is printed with its position");
 	}
 }
 
