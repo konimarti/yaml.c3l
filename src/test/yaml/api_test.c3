@@ -123,7 +123,7 @@ i: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h,*h]
 	// The test runner's leak-tracking allocator makes each of the ~2 million allocations before
 	// the limit slow (seconds in total), so this test uses the plain libc heap, like yamlv.
 	Clock start = clock::now();
-	test::@error(yaml::from_string(yaml, &allocators::LIBC_ALLOCATOR, false), yaml::LIMIT_EXCEEDED);
+	test::@error(yaml::from_string(yaml, &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
 	assert(start.to_now() < (NanoDuration)1_000_000_000, "the limit must be hit in < 1 s");
 }
 
@@ -132,10 +132,10 @@ fn void nesting_limit() @test => @pool()
 	DString deep = dstring::temp();
 	deep.append_repeat('[', 600);
 	deep.append_repeat(']', 600);
-	test::@error(yaml::from_string(deep.str_view(), mem, false), yaml::LIMIT_EXCEEDED);
+	test::@error(yaml::from_string(deep.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 	DString ok = dstring::temp();
-	ok.append_repeat('[', yaml::MAX_DEPTH);
-	ok.append_repeat(']', yaml::MAX_DEPTH);
+	ok.append_repeat('[', parser::MAX_DEPTH);
+	ok.append_repeat(']', parser::MAX_DEPTH);
 	YamlData data = yaml::from_string(ok.str_view(), mem, false)!!;
 	data.free();
 }
@@ -151,7 +151,7 @@ fn void deep_alias_limit() @test => @pool()
 	s.append_repeat('[', 200);
 	s.append("*a");
 	s.append_repeat(']', 200);
-	test::@error(yaml::from_string(s.str_view(), mem, false), yaml::LIMIT_EXCEEDED);
+	test::@error(yaml::from_string(s.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 }
 
 // M6 review item 1: anchored nodes are not copied, so nested anchors stay linear in the input

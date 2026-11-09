@@ -6,7 +6,7 @@ import std::collections::list;
 
 import yaml::parser;
 
-faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS, LIMIT_EXCEEDED;
+faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS;
 
 struct YamlData (Printable)   // to_format prints JSON, one document per line
 {

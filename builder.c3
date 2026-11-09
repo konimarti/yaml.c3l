@@ -3,9 +3,6 @@ module yaml;
 import std::collections::map, std::collections::list, std::collections::object;
 import yaml::parser;
 
-const sz MAX_ALIAS_NODES = 1_000_000;   // nodes created by alias expansion per document
-const int MAX_DEPTH = 512;              // nesting depth of the built tree
-
 const String TAG_STR = "tag:yaml.org,2002:str";
 const String TAG_NULL = "tag:yaml.org,2002:null";
 const String TAG_BOOL = "tag:yaml.org,2002:bool";
@@ -44,12 +41,12 @@ fn Object*? Builder.node(&self, Event e)
 			Object*? anchored = self.anchors.get(e.anchor);
 			if (catch anchored) return self.error(e.start, "undefined alias", UNDEFINED_ALIAS)~;
 			Object*? copy = self.clone(anchored, self.a, self.depth);
-			if (catch copy) return self.error(e.start, "alias expansion or nesting limit exceeded", LIMIT_EXCEEDED)~;
+			if (catch copy) return self.error(e.start, "alias expansion or nesting limit exceeded", parser::LIMIT_EXCEEDED)~;
 			return copy;
 		case SCALAR:
 			o = self.scalar(e)!;
 		case SEQUENCE_START:
-			if (++self.depth > MAX_DEPTH) return self.error(e.start, "nesting depth limit exceeded", LIMIT_EXCEEDED)~;
+			if (++self.depth > parser::MAX_DEPTH) return self.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			o = object::new_array(self.a);
 			while (true)
 			{
@@ -59,7 +56,7 @@ fn Object*? Builder.node(&self, Event e)
 			}
 			self.depth--;
 		case MAPPING_START:
-			if (++self.depth > MAX_DEPTH) return self.error(e.start, "nesting depth limit exceeded", LIMIT_EXCEEDED)~;
+			if (++self.depth > parser::MAX_DEPTH) return self.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			o = object::new_obj(self.a);
 			while (true)
 			{
@@ -99,7 +96,7 @@ fn String? Builder.key(&self, Event e)
 // created node counts against MAX_ALIAS_NODES; `depth` is the depth of the alias.
 fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 {
-	if (++self.alias_nodes > MAX_ALIAS_NODES) return LIMIT_EXCEEDED~;
+	if (++self.alias_nodes > parser::MAX_ALIAS_NODES) return parser::LIMIT_EXCEEDED~;
 	switch
 	{
 		case o.is_null(): return object::new_null();
@@ -108,7 +105,7 @@ fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 		case o.is_float(): return object::new_float(a, o.f);
 		case o.is_string(): return object::new_string(a, o.s);
 	}
-	if (depth + 1 > MAX_DEPTH) return LIMIT_EXCEEDED~;
+	if (depth + 1 > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
 	if (o.is_array())
 	{
 		Object* arr = object::new_array(a);
