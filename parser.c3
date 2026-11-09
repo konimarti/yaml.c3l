@@ -72,10 +72,10 @@ fn bool Token.is(self, TokenType... types)
 	return false;
 }
 
-fn Event? Parser.fail(&self, Token t, String msg)
-{
-	return self.scanner.error(t.start, msg)~;
-}
+// Report an error at `t` and return its fault: `return self.err(t, msg)~;`.
+fn fault Parser.err(&self, Token t, String msg, fault f = SYNTAX_ERROR) => self.scanner.error(t.start, msg, f);
+
+fn Event? Parser.fail(&self, Token t, String msg, fault f = SYNTAX_ERROR) => self.err(t, msg, f)~;
 
 // The document ends at '...', '---' or the end of the stream.
 fn Event? Parser.document_start(&self, bool implicit)
@@ -93,7 +93,7 @@ fn Event? Parser.document_start(&self, bool implicit)
 		self.state = END;
 		return { .type = STREAM_END, .start = t.start };
 	}
-	if (t.type == T_VERSION_DIRECTIVE || t.type == T_TAG_DIRECTIVE)
+	if (t.is(T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE))
 	{
 		if (!implicit) return self.fail(t, "a directive after a document needs '...' first");
 		t = self.directives()!;
@@ -111,23 +111,24 @@ fn Event? Parser.document_start(&self, bool implicit)
 	return { .type = DOCUMENT_START, .start = t.start };
 }
 
-// %YAML (at most once) and %TAG (each handle once); returns the token after them.
+// %YAML (at most once), %TAG (each handle once) and ignored reserved directives; returns the
+// token after them.
 fn Token? Parser.directives(&self)
 {
 	bool version;
 	Token t = self.scanner.peek_token()!;
-	while (t.type == T_VERSION_DIRECTIVE || t.type == T_TAG_DIRECTIVE)
+	while (t.is(T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE))
 	{
 		if (t.type == T_VERSION_DIRECTIVE)
 		{
-			if (version) return self.scanner.error(t.start, "duplicate %YAML directive", INVALID_DIRECTIVE)~;
+			if (version) return self.err(t, "duplicate %YAML directive", INVALID_DIRECTIVE)~;
 			version = true;
 		}
-		else
+		else if (t.type == T_TAG_DIRECTIVE)
 		{
 			foreach (d : self.tag_directives)
 			{
-				if (d.handle == t.handle) return self.scanner.error(t.start, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
+				if (d.handle == t.handle) return self.err(t, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
 			}
 			self.tag_directives.push({ t.handle, t.value });
 		}
@@ -145,13 +146,13 @@ fn String? Parser.resolve_tag(&self, Token t)
 	foreach (d : self.tag_directives) if (d.handle == t.handle) return d.prefix.tconcat(t.value);
 	if (t.handle == "!") return "!".tconcat(t.value);
 	if (t.handle == "!!") return "tag:yaml.org,2002:".tconcat(t.value);
-	return self.scanner.error(t.start, "undefined tag handle", UNDEFINED_TAG_HANDLE)~;
+	return self.err(t, "undefined tag handle", UNDEFINED_TAG_HANDLE)~;
 }
 
 fn Event? Parser.document_content(&self)
 {
 	Token t = self.scanner.peek_token()!;
-	if (t.is(T_DOCUMENT_START, T_DOCUMENT_END, T_STREAM_END, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE))
+	if (t.is(T_DOCUMENT_START, T_DOCUMENT_END, T_STREAM_END, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE))
 	{
 		self.state = self.states.pop()!!;
 		return empty_scalar(t.start);
@@ -320,7 +321,7 @@ fn Event? Parser.block_mapping_value(&self)
 fn Token? Parser.flow_separator(&self, Token t, bool first, String msg)
 {
 	if (first) return t;
-	if (t.type != T_FLOW_ENTRY) return self.scanner.error(t.start, msg)~;
+	if (t.type != T_FLOW_ENTRY) return self.err(t, msg)~;
 	self.scanner.next_token()!;
 	return self.scanner.peek_token()!;
 }

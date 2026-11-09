@@ -11,10 +11,10 @@ enum TokenType : char
 	T_BLOCK_SEQUENCE_START, T_BLOCK_MAPPING_START, T_BLOCK_END,
 	T_FLOW_SEQUENCE_START, T_FLOW_SEQUENCE_END, T_FLOW_MAPPING_START, T_FLOW_MAPPING_END,
 	T_BLOCK_ENTRY, T_FLOW_ENTRY, T_KEY, T_VALUE, T_SCALAR,
-	T_ANCHOR, T_ALIAS, T_TAG, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE
+	T_ANCHOR, T_ALIAS, T_TAG, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE
 }
 
-// value: scalar text, anchor/alias name, tag suffix, YAML version or TAG prefix.
+// value: scalar text, anchor/alias name, tag suffix, YAML version, TAG prefix or directive name.
 // handle: tag handle ("" for a verbatim tag) or TAG directive handle.
 struct Token { TokenType type; Mark start; String value; String handle; ScalarStyle style; }
 
@@ -154,9 +154,9 @@ fn void? Scanner.fetch_more_tokens(&self)
 	}
 }
 
-fn void Scanner.push(&self, TokenType type, Mark m, String value = "", ScalarStyle style = PLAIN)
+fn void Scanner.push(&self, TokenType type, Mark m, String value = "", ScalarStyle style = PLAIN, String handle = "")
 {
-	self.tokens.push({ .type = type, .start = m, .value = value, .style = style });
+	self.tokens.push({ .type = type, .start = m, .value = value, .style = style, .handle = handle });
 }
 
 fn void? Scanner.fetch_next_token(&self)
@@ -235,7 +235,7 @@ fn void Scanner.scan_to_next_token(&self)
 		}
 		else if (c == '#' && (self.mark.pos == 0 || is_blankz(self.s[self.mark.pos - 1])))
 		{
-			while (!self.at_end() && self.peek() != '\n') self.advance();
+			self.skip_line();
 		}
 		else if (c == '\n')
 		{
@@ -453,16 +453,18 @@ fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 	self.push(type, m);
 }
 
-// Only blanks and a comment may follow on this line.
-fn void? Scanner.end_of_line(&self)
+fn void Scanner.skip_line(&self)
+{
+	while (!self.at_end() && self.peek() != '\n') self.advance();
+}
+
+// Only blanks and a comment ('#' after a blank) may follow on this line.
+fn void? Scanner.end_of_line(&self, String msg = "unexpected text at the end of the line", fault f = SYNTAX_ERROR)
 {
 	sz blanks = self.mark.pos;
 	self.skip_blanks();
-	if (self.peek() == '#' && self.mark.pos > blanks)
-	{
-		while (!self.at_end() && self.peek() != '\n') self.advance();
-	}
-	if (!self.at_end() && self.peek() != '\n') return self.error(self.mark, "unexpected text at the end of the line")~;
+	if (self.peek() == '#' && self.mark.pos > blanks) self.skip_line();
+	if (!self.at_end() && self.peek() != '\n') return self.error(self.mark, msg, f)~;
 }
 
 // '---' or '...' at column 1 followed by a blank or EOF
@@ -729,16 +731,7 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 		}
 		self.advance();
 	}
-	sz blanks = self.mark.pos;
-	self.skip_blanks();
-	if (self.peek() == '#' && self.mark.pos > blanks)
-	{
-		while (!self.at_end() && self.peek() != '\n') self.advance();
-	}
-	if (!self.at_end() && self.peek() != '\n')
-	{
-		return self.error(self.mark, "invalid block scalar header", INVALID_BLOCK_HEADER)~;
-	}
+	self.end_of_line("invalid block scalar header", INVALID_BLOCK_HEADER)!;
 	self.advance();
 
 	// content indentation: given by the indicator, or detected from the first non-empty line
@@ -773,7 +766,7 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 		for (int i = 0; i < breaks; i++) buf.append_char('\n');
 		more_indented = blank;
 		sz from = self.mark.pos;
-		while (!self.at_end() && self.peek() != '\n') self.advance();
+		self.skip_line();
 		buf.append(self.s[from:self.mark.pos - from]);
 		line_break = true;   // the end of the input ends the last line like a line break
 		breaks = 0;
@@ -899,7 +892,7 @@ fn void? Scanner.fetch_tag(&self)
 	}
 	char c = self.peek();
 	if (!is_blankz(c) && !(self.flow_level && is_flow_indicator(c))) return self.error(self.mark, "a tag must be followed by a blank")~;
-	self.tokens.push({ .type = T_TAG, .start = m, .handle = handle, .value = suffix });
+	self.push(T_TAG, m, suffix, handle: handle);
 }
 
 // '%YAML 1.2', '%TAG !h! prefix'; other directives are ignored.
@@ -922,6 +915,7 @@ fn void? Scanner.fetch_directive(&self)
 			if (!self.peek().is_digit()) return self.error(self.mark, "invalid %YAML version", INVALID_DIRECTIVE)~;
 			while (self.peek().is_digit()) self.advance();
 			String version = self.s[from:self.mark.pos - from];
+			if (!version.starts_with("1.")) return self.error(m, "unsupported YAML major version", INVALID_DIRECTIVE)~;
 			self.end_of_line()!;
 			self.push(T_VERSION_DIRECTIVE, m, version);
 		case "TAG":
@@ -930,13 +924,13 @@ fn void? Scanner.fetch_directive(&self)
 			if (handle.len > 2) foreach (c : handle[1:handle.len - 2]) ok &= is_word_char(c);
 			if (!ok) return self.error(m, "invalid %TAG handle", INVALID_DIRECTIVE)~;
 			self.skip_blanks();
-			sz from = self.mark.pos;
-			while (!is_blankz(self.peek())) self.advance();
-			String prefix = self.s[from:self.mark.pos - from];
-			if (!prefix.len) return self.error(self.mark, "%TAG without a prefix", INVALID_DIRECTIVE)~;
+			Mark pm = self.mark;
+			String prefix = self.scan_tag_uri(true)!;
+			if (!prefix.len || is_flow_indicator(prefix[0])) return self.error(pm, "invalid %TAG prefix", INVALID_DIRECTIVE)~;
 			self.end_of_line()!;
-			self.tokens.push({ .type = T_TAG_DIRECTIVE, .start = m, .handle = handle, .value = prefix });
+			self.push(T_TAG_DIRECTIVE, m, prefix, handle: handle);
 		default:
-			while (!self.at_end() && self.peek() != '\n') self.advance();   // reserved directive
+			self.skip_line();   // reserved directive: ignored, but it still needs a following '---'
+			self.push(T_RESERVED_DIRECTIVE, m, name);
 	}
 }

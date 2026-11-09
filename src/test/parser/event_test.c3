@@ -1,57 +1,43 @@
 module yaml::event_test;
 
 import std::io;
-import yaml::parser;
+import yaml::parser, yaml::test_util;
 import yaml;
-
-fn String? events(String yaml)
-{
-	DString out = dstring::temp();
-	Parser p;
-	p.init(yaml, false);
-	while (true)
-	{
-		Event e = p.next()!;
-		if (out.len()) out.append_char('\n');
-		out.appendf("%s", e);
-		if (e.type == STREAM_END) return out.str_view();
-	}
-}
 
 fn void empty_stream() @test => @pool()
 {
-	test::eq(events("")!!, "+STR\n-STR");
+	test::eq(test_util::events("")!!, "+STR\n-STR");
 }
 
 fn void single_scalar_a() @test => @pool()
 {
 	// a\n -> +STR +DOC =VAL :a -DOC -STR
-	test::eq(events("a\n")!!, "+STR\n+DOC\n=VAL :a\n-DOC\n-STR");
+	test::eq(test_util::events("a\n")!!, "+STR\n+DOC\n=VAL :a\n-DOC\n-STR");
 }
 
 fn void explicit_markers() @test => @pool()
 {
 	// ---\na\n...\n -> +STR +DOC --- =VAL :a -DOC ... -STR
-	test::eq(events("---\na\n...\n")!!, "+STR\n+DOC ---\n=VAL :a\n-DOC ...\n-STR");
+	test::eq(test_util::events("---\na\n...\n")!!, "+STR\n+DOC ---\n=VAL :a\n-DOC ...\n-STR");
 }
 
 fn void folded_multiline() @test => @pool()
 {
 	// a\nb\n\nc -> =VAL :a b\\nc
 	// Single newline -> space, double newline -> \n
-	test::eq(events("a\nb\n\nc\n")!!, "+STR\n+DOC\n=VAL :a b\\nc\n-DOC\n-STR");
+	test::eq(test_util::events("a\nb\n\nc\n")!!, "+STR\n+DOC\n=VAL :a b\\nc\n-DOC\n-STR");
 }
 
 fn void scalar_with_comment() @test => @pool()
 {
 	// a # c\n -> =VAL :a (no trailing space)
-	test::eq(events("a # c\n")!!, "+STR\n+DOC\n=VAL :a\n-DOC\n-STR");
+	test::eq(test_util::events("a # c\n")!!, "+STR\n+DOC\n=VAL :a\n-DOC\n-STR");
 }
 
 fn void two_documents() @test => @pool()
 {
 	// a\n---\nb\n -> two documents
-	test::eq(events("a\n---\nb\n")!!, "+STR\n+DOC\n=VAL :a\n-DOC\n+DOC ---\n=VAL :b\n-DOC\n-STR");
+	test::eq(test_util::events("a\n---\nb\n")!!, "+STR\n+DOC\n=VAL :a\n-DOC\n+DOC ---\n=VAL :b\n-DOC\n-STR");
 }
 
 fn void escaping_test() @test => @pool()
