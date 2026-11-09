@@ -17,7 +17,7 @@ for f in bench/data/*.yaml; do
 		modes="tree tree2 from_buffer events events2"
 	else
 		modes="tree tree2 from_buffer events events2 json json2 foreach foreach2 free free2"
-		[ "$base" = "servers.yaml" ] && modes="$modes decode"
+		[ "$base" = "servers.yaml" ] && modes="$modes decode decode2"
 		[ "$base" = "map-100k.yaml" ] && modes="$modes find find2"
 	fi
 	for m in $modes; do ./build/bench "$m" "$f" "$n" >> "$csv" || echo "failed: $m $f" >&2; done
