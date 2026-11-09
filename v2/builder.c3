@@ -134,8 +134,9 @@ fn uint? AnchorTable.get(&self, String name)
 
 struct DupSlot @private
 {
-	String key;
+	Span key;
 	uint node_id;
+	ulong hash;
 }
 
 struct DupTable @private
@@ -182,27 +183,40 @@ fn void? DupTable.grow(&self)
 
 	self.slots = new_slots;
 	self.cap = new_cap;
-	self.count = 0;
 	self.active_count = 0;
+	ulong mask = (ulong)new_cap - 1;
 
 	for (uint i = 0; i < old_cap; i++)
 	{
 		if (old_slots[i].node_id)
 		{
-			self.insert(old_slots[i].key, old_slots[i].node_id, null)!;
+			ulong idx = old_slots[i].hash & mask;
+			while (self.slots[idx].node_id != 0)
+			{
+				idx = (idx + 1) & mask;
+			}
+			self.slots[idx] = old_slots[i];
+			if (self.active_count == self.active_cap)
+			{
+				self.active_cap = self.active_cap ? self.active_cap * 2 : 64;
+				self.active = alloc::realloc_array(self.allocator, self.active, uint, self.active_cap).ptr;
+			}
+			self.active[self.active_count++] = (uint)idx;
 		}
 	}
 	if (old_slots) alloc::free(self.allocator, old_slots);
 }
 
-fn void? DupTable.insert(&self, String key, uint node_id, uint* earlier)
+fn void? DupTable.insert(&self, Parser* parser, Span key, uint node_id, uint* earlier)
 {
 	if (self.count * 2 >= self.cap) self.grow()!;
+	String key_text = parser.text(key);
+	ulong h = hash_string(key_text, self.seed);
 	ulong mask = (ulong)self.cap - 1;
-	ulong idx = hash_string(key, self.seed) & mask;
+	ulong idx = h & mask;
 	while (self.slots[idx].node_id != 0)
 	{
-		if (self.slots[idx].key == key)
+		if (self.slots[idx].hash == h && parser.text(self.slots[idx].key) == key_text)
 		{
 			if (earlier) *earlier = self.slots[idx].node_id;
 			self.slots[idx].node_id = node_id;
@@ -210,7 +224,7 @@ fn void? DupTable.insert(&self, String key, uint node_id, uint* earlier)
 		}
 		idx = (idx + 1) & mask;
 	}
-	self.slots[idx] = { .key = key, .node_id = node_id };
+	self.slots[idx] = { .key = key, .node_id = node_id, .hash = h };
 	self.count++;
 	if (self.active_count == self.active_cap)
 	{
@@ -278,10 +292,11 @@ fn DupTable* Builder.get_dup_table(&self, uint map_depth)
 	return &self.dup_tables[map_depth];
 }
 
-fn void Builder.check_duplicate_key(&self, uint map_depth, uint map_id, uint new_entry_id, String key, uint entry_count)
+fn void Builder.check_duplicate_key(&self, uint map_depth, uint map_id, uint new_entry_id, Span key_span, uint entry_count)
 {
 	if (entry_count <= 8)
 	{
+		String key = self.parser.text(key_span);
 		uint child = self.tree.nodes[map_id].first;
 		while (child != 0)
 		{
@@ -309,14 +324,13 @@ fn void Builder.check_duplicate_key(&self, uint map_depth, uint map_id, uint new
 				NodeData* nd = &self.tree.nodes[child];
 				if ((nd.flags & F_SHADOWED) == 0 && (nd.flags & F_KEY_NODE) == 0)
 				{
-					String ktext = self.parser.text(nd.key);
-					dt.insert(ktext, child, null)!!;
+					dt.insert(self.parser, nd.key, child, null)!!;
 				}
 				child = nd.next;
 			}
 		}
 		uint earlier = 0;
-		dt.insert(key, new_entry_id, &earlier)!!;
+		dt.insert(self.parser, key_span, new_entry_id, &earlier)!!;
 		if (earlier)
 		{
 			self.tree.shadow(earlier);
@@ -472,7 +486,6 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					}
 					Schema kschema = kschema_res;
 					Span kspan = (kschema == Schema.NULL) ? (Span){} : key_ev.value;
-					String cmp_key = (kschema == Schema.NULL) ? "" : ktext;
 
 					if (key_ev.anchor.len)
 					{
@@ -498,7 +511,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					}
 
 					entry_count++;
-					self.check_duplicate_key(map_depth, id, val_id, cmp_key, entry_count);
+					self.check_duplicate_key(map_depth, id, val_id, kspan, entry_count);
 
 					self.tree.append_after(id, child_prev, val_id);
 					child_prev = val_id;
@@ -535,7 +548,6 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 
 					if (td.kind == SCALAR)
 					{
-						String cmp_key = (td.schema == Schema.NULL) ? "" : self.parser.text(td.val);
 						Span kspan = (td.schema == Schema.NULL) ? (Span){} : td.val;
 
 						Event val_ev = self.parser.next()!;
@@ -543,7 +555,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 						uint val_id = vres.id;
 
 						entry_count++;
-						self.check_duplicate_key(map_depth, id, val_id, cmp_key, entry_count);
+						self.check_duplicate_key(map_depth, id, val_id, kspan, entry_count);
 
 						self.tree.append_after(id, child_prev, val_id);
 						child_prev = val_id;
