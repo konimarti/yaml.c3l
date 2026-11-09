@@ -1,8 +1,7 @@
 module yamlv;
 
 import std::io, std::os;
-import yaml;
-import yaml::parser;
+import yaml2;
 import yaml2::parser;
 
 const String USAGE = "yamlv: YAML parser\n\nUsage: yamlv [OPTIONS]\n\nOptions:\n  -e  Output event stream\n  -j  Output as JSON\n  -h  Show this help\n";
@@ -42,7 +41,8 @@ fn int main(String[] args)
 		if (events)
 		{
 			yaml2::parser::Parser p;
-			p.init_inplace(input_bytes, true);
+			p.init_inplace(input_bytes, true, mem);
+			defer p.free();
 			while (true)
 			{
 				yaml2::parser::Event? e = p.next();
@@ -51,7 +51,7 @@ fn int main(String[] args)
 				if (e.type == STREAM_END) return 0;
 			}
 		}
-		yaml::Yaml? data = yaml::from_string(input);
+		yaml2::Yaml? data = yaml2::from_buffer(input_bytes);
 		if (catch data) return 1;
 		defer data.free();
 		if (json)

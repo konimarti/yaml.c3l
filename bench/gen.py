@@ -135,6 +135,92 @@ def jsonish(size):
     return "".join(out)
 
 
+def wide_flow_seq(size):
+    """1 MB wide flow sequence: [item0, item1, ...]"""
+    items = []
+    n = 2  # '[' and ']'
+    i = 0
+    while n < size:
+        item = "val_%d" % i
+        items.append(item)
+        n += len(item) + 2
+        i += 1
+    return "[" + ", ".join(items) + "]\n"
+
+
+def map_100k():
+    """100 k-entry map with duplicate keys."""
+    out = ["map_100k:\n"]
+    for i in range(100_000):
+        out.append("  k_%d: %d\n" % (i, i))
+    # Some duplicates
+    for i in range(100):
+        out.append("  k_%d: %d\n" % (i * 10, i * 1000))
+    return "".join(out)
+
+
+def alias_heavy():
+    """10 k anchors, ~900 k aliases within budget."""
+    out = ["# 10k anchors\nanchors:\n"]
+    for i in range(10_000):
+        out.append("  a%d: &a%d %d\n" % (i, i, i))
+    out.append("aliases:\n")
+    # 90 sequence items each expanding 10k aliases = 900k alias nodes (< 1M budget)
+    for row in range(90):
+        out.append("  - [")
+        out.append(", ".join("*a%d" % i for i in range(10_000)))
+        out.append("]\n")
+    return "".join(out)
+
+
+def escape_heavy(size):
+    """Escape-heavy double-quoted strings including \\L, \\P, escapes and unicodes."""
+    out, n, i = [], 0, 0
+    escapes = ["\\L", "\\P", "\\n", "\\t", "\\r", "\\0", '\\"', "\\\\", "\\x41", "\\u00e9", "\\U0001F600"]
+    while n < size:
+        esc_sample = " ".join(rnd.choice(escapes) + word() for _ in range(15))
+        s = 'esc_%d: "%s \\L %s \\P %s"\n' % (i, esc_sample, word(), esc_sample)
+        out.append(s)
+        n += len(s)
+        i += 1
+    return "".join(out)
+
+
+def depth_256():
+    """Nesting at depth 256 (within MAX_DEPTH limit)."""
+    return "[" * 256 + "leaf" + "]" * 256 + "\n"
+
+
+def depth_257():
+    """Nesting at depth 257 (exceeds MAX_DEPTH limit, expected to reject)."""
+    return "[" * 257 + "leaf" + "]" * 257 + "\n"
+
+
+def many_tags():
+    """Many %TAG directives across multiple documents (<=16 per doc)."""
+    out = []
+    for doc in range(100):
+        for i in range(10):
+            out.append("%%TAG !h%d! tag:example.org,%d,%d:\n" % (i, doc, i))
+        out.append("--- [!h0!v 1, !h1!v 2, !h2!v 3]\n...\n")
+    return "".join(out)
+
+
+def flow_key_2040():
+    """A flow-map key of exactly 2040 tokens (within QUEUE_SIZE limit)."""
+    return "{[" + "a," * 1018 + "a]: 1}\n"
+
+
+def flow_key_2041():
+    """A flow-map key of 2041 tokens (exceeds QUEUE_SIZE limit, expected to reject)."""
+    return "{[" + "a," * 1019 + "a]: 1}\n"
+
+
+def block_eof():
+    """Block scalars at EOF without trailing newline."""
+    return "key: |\n  first line\n  second line without trailing newline"
+
+
 def suite():
     """The valid inputs of the yaml-test-suite (cases without an `error` file), one document
     stream after the other; "..." ends the previous stream (directives need it)."""
@@ -161,6 +247,16 @@ def main():
         "long-strings.yaml": long_strings(target // 2),
         "deep.yaml": deep(target // 5),
         "flow.yaml": jsonish(target),
+        "wide-seq.yaml": wide_flow_seq(1 * MB),
+        "map-100k.yaml": map_100k(),
+        "alias-heavy.yaml": alias_heavy(),
+        "escape-heavy.yaml": escape_heavy(target // 4),
+        "depth-256.yaml": depth_256(),
+        "depth-257.yaml": depth_257(),
+        "tags.yaml": many_tags(),
+        "flow-key-2040.yaml": flow_key_2040(),
+        "flow-key-2041.yaml": flow_key_2041(),
+        "block-eof.yaml": block_eof(),
     }
     if os.path.isdir(SUITE):
         files["suite.yaml"] = suite()
@@ -172,4 +268,5 @@ def main():
         print("%-20s %10d bytes" % (name, len(text.encode("utf-8"))))
 
 
-main()
+if __name__ == "__main__":
+    main()
