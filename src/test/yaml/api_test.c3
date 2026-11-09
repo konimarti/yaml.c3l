@@ -116,16 +116,28 @@ fn void nesting_limit() @test => @pool()
 
 fn void deep_alias_limit() @test => @pool()
 {
-	// an alias may not push the tree beyond MAX_DEPTH either
-	DString s = dstring::temp();
-	s.append("a: &a ");
-	s.append_repeat('[', 400);
-	s.append_repeat(']', 400);
-	s.append("\nb: ");
-	s.append_repeat('[', 200);
-	s.append("*a");
-	s.append_repeat(']', 200);
-	test::@error(yaml::from_string(s.str_view(), mem, false), parser::LIMIT_EXCEEDED);
+	// an alias may not push the tree beyond MAX_DEPTH: each part alone is deep, but allowed
+	foreach (int depth : { 100, 150 })
+	{
+		DString s = dstring::temp();
+		s.append("a: &a ");
+		s.append_repeat('[', depth);
+		s.append_repeat(']', depth);
+		s.append("\nb: ");
+		s.append_repeat('[', depth);
+		s.append("*a");
+		s.append_repeat(']', depth);
+		s.append("\n");
+		if (depth * 2 > parser::MAX_DEPTH)
+		{
+			test::@error(yaml::from_string(s.str_view(), mem, false), parser::LIMIT_EXCEEDED);
+		}
+		else
+		{
+			Yaml data = yaml::from_string(s.str_view(), mem, false)!!;   // 100 + 100 levels fit
+			data.free();
+		}
+	}
 }
 
 // Anchored nodes are not copied, so nested anchors stay linear in the input
