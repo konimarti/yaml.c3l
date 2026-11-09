@@ -60,7 +60,7 @@ fn void Scanner.init(&self, String s, bool verbose = true)
 }
 
 // The simple key slot of the current flow level.
-fn SimpleKey* Scanner.key(&self) @inline => self.keys.get_ref(self.keys.len() - 1);
+fn SimpleKey* Scanner.simple_key(&self) @inline => self.keys.get_ref(self.keys.len() - 1);
 
 fn bool is_flow_indicator(char c) => c == ',' || c == '[' || c == ']' || c == '{' || c == '}';
 
@@ -221,7 +221,7 @@ fn void? Scanner.fetch_next_token(&self)
 	self.scan_to_next_token();
 	self.stale_simple_keys()!;
 	// after a JSON-like node, ':' may follow directly (in a flow mapping also on a later line)
-	bool json_key = self.json_node && (self.mark.line == prev_line || self.key().flow_map);
+	bool json_key = self.json_node && (self.mark.line == prev_line || self.simple_key().flow_map);
 	self.json_node = false;
 	if (self.flow_level)
 	{
@@ -334,7 +334,7 @@ fn void? Scanner.save_simple_key(&self)
 {
 	if (!self.simple_key_allowed) return;
 	self.remove_simple_key()!;
-	SimpleKey* k = self.key();
+	SimpleKey* k = self.simple_key();
 	*k = {
 		.possible = true,
 		.flow_map = k.flow_map,
@@ -346,7 +346,7 @@ fn void? Scanner.save_simple_key(&self)
 	};
 }
 
-fn void? Scanner.remove_simple_key(&self) => self.drop_key(self.key());
+fn void? Scanner.remove_simple_key(&self) => self.drop_key(self.simple_key());
 
 // A key that can no longer get its ':'; losing a required one is an error.
 fn void? Scanner.drop_key(&self, SimpleKey* k)
@@ -401,7 +401,7 @@ fn void? Scanner.fetch_indicator(&self, TokenType token, TokenType collection, S
 
 fn void? Scanner.fetch_value(&self)
 {
-	SimpleKey* k = self.key();
+	SimpleKey* k = self.simple_key();
 	if (k.possible)
 	{
 		if (!self.flow_level)
@@ -453,7 +453,7 @@ fn void? Scanner.fetch_flow_start(&self, TokenType type)
 fn void? Scanner.fetch_flow_end(&self, TokenType type)
 {
 	if (!self.flow_level) return self.error(self.mark, "closing bracket without an opening one")~;
-	if (self.key().flow_map != (type == T_FLOW_MAPPING_END)) return self.error(self.mark, "closing bracket does not match the opening one")~;
+	if (self.simple_key().flow_map != (type == T_FLOW_MAPPING_END)) return self.error(self.mark, "closing bracket does not match the opening one")~;
 	self.remove_simple_key()!;
 	self.keys.pop()!!;
 	self.flow_level--;
