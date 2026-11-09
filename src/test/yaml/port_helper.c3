@@ -1,4 +1,4 @@
-// Shared helpers for ported v2 tests.
+// Shared helpers for ported tests.
 module yaml::port_test_util;
 
 import std::io, libc;

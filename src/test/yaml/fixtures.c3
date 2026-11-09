@@ -1,4 +1,4 @@
-// Shared fixtures for the v2 cards (a)-(e): hand-made trees, writable buffers, event listings.
+// Shared fixtures for tests: hand-made trees, writable buffers, event listings.
 module yaml::testing;
 
 import yaml, yaml::parser;

@@ -1,5 +1,3 @@
-// v2 contract (frozen by the designer; changes need a design amendment).
-// Temporary module `yaml::parser`; card (e) renames yaml -> yaml at the cutover.
 // The public side of the event parser: faults, limits, spans, events.
 module yaml::parser;
 

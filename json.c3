@@ -1,6 +1,5 @@
-// v2 contract. Card (c) owns this file: compact JSON (the writers of the old yaml.c3, moved).
-// Source order, shadowed entries skipped, collection keys as compact JSON text (counted against
-// MAX_KEY_TEXT + KEY_TEXT_PER_BYTE * input: LIMIT_EXCEEDED), floats as before.
+// Compact JSON: source order, shadowed entries skipped, collection keys as compact JSON text
+// (counted against MAX_KEY_TEXT + KEY_TEXT_PER_BYTE * input: LIMIT_EXCEEDED), floats as before.
 module yaml;
 
 import std::io;

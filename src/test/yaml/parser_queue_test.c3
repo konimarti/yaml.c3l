@@ -1,4 +1,4 @@
-// Tests for the token queue (M3).
+// Tests for the token queue.
 // Flow-map key of exactly 2040 tokens passes, 2041 fails with LIMIT_EXCEEDED.
 // 256 nested block levels closed at EOF (burst of 256 BLOCK_END) fits in the ring.
 module yaml::parser_test;

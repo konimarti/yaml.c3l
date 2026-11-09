@@ -1,4 +1,4 @@
-// v2 contract. Card (c) owns this file; the only file that imports std::collections::object.
+// Conversion to std::collections::object::Object.
 module yaml;
 
 import std::io;

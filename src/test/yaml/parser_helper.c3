@@ -1,4 +1,4 @@
-// Helper functions for v2 parser tests.
+// Helper functions for parser tests.
 module yaml::parser_test;
 
 import std::io;

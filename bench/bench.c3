@@ -26,7 +26,7 @@ struct Config
 // ---- the library API ----
 
 
-// New tree (v2): parse via from_string, return number of documents, free.
+// Tree: parse via from_string, return number of documents, free.
 fn sz run_tree(String input, Allocator a, bool expect_reject = false)
 {
 	yaml::Yaml? data = yaml::from_string(input, a, false);
@@ -35,7 +35,7 @@ fn sz run_tree(String input, Allocator a, bool expect_reject = false)
 	return expect_reject ? -1 : data.len();
 }
 
-// New tree (v2): parse via from_buffer in-place, return number of documents, free.
+// Tree: parse via from_buffer in-place, return number of documents, free.
 fn sz run_from_buffer(char[] buf, Allocator a, bool expect_reject = false)
 {
 	yaml::Yaml? data = yaml::from_buffer(buf, a, false);
@@ -45,7 +45,7 @@ fn sz run_from_buffer(char[] buf, Allocator a, bool expect_reject = false)
 }
 
 
-// New events only (v2): no tree, in-place scanner.
+// Events only: no tree, in-place scanner.
 fn sz run_events(char[] buf, bool expect_reject = false) => @pool()
 {
 	yaml::parser::Parser p;
@@ -95,7 +95,6 @@ fn sz run_find(yaml::Yaml tree)
 	assert(found == 1000, "find must locate all keys");
 	return found;
 }
-
 
 
 fn sz count_nodes(yaml::Node n)

@@ -1,4 +1,4 @@
-// Tests for growth exceptions, spill allocator, CRLF, BOM, and blanking (M2, M7, N5).
+// Tests for growth exceptions, spill allocator, CRLF, BOM, and blanking.
 module yaml::parser_test;
 
 import std::io;
@@ -91,7 +91,7 @@ fn void bom_coordinates_and_error() @test => @pool()
 	test::@error(p.next(), parser::SYNTAX_ERROR);
 }
 
-// Leftover region blanked with spaces (M7).
+// Leftover region blanked with spaces.
 fn void in_place_leftover_blanked() @test => @pool()
 {
 	// "hello\nworld" in double quotes: quotes and escape shrink
@@ -110,7 +110,7 @@ fn void in_place_leftover_blanked() @test => @pool()
 	test::eq(buf[4], ' ');
 }
 
-// M7: Error excerpt still correct after in-place rewriting on the same line.
+// Error excerpt still correct after in-place rewriting on the same line.
 fn void error_excerpt_after_in_place_rewriting() @test => @pool()
 {
 	// Line contains a decoded quoted scalar followed by an error:
@@ -153,7 +153,7 @@ fn void error_excerpt_stops_at_line_end() @test => @pool()
 	}
 }
 
-// M4: NO_SPACE reports a clear error message when verbose.
+// NO_SPACE reports a clear error message when verbose.
 fn void nospace_error_reporting() @test => @pool()
 {
 	char[] buf = testing::writable("\"\x5cL\x5cL\"\n");

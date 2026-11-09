@@ -1,5 +1,5 @@
-// v2 contract. Card (d) owns this file. Same rules, messages and ownership as the old decode.c3
-// (README "Decoding into a struct"); integers go through Node.as_int128 / schema::int_of.
+// Decoding into a struct. Same rules, messages and ownership as README
+// ("Decoding into a struct"); integers go through Node.as_int128 / schema::int_of.
 module yaml;
 
 import std::io, std::collections::list, yaml::parser;

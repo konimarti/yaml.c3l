@@ -1,4 +1,4 @@
-// Card 0 checks: the fixtures, the tree primitives and and the spans.
+// Checks for fixtures, tree primitives, and spans.
 module yaml::contract_test;
 
 import yaml, yaml::parser, yaml::testing;

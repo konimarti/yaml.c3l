@@ -1,7 +1,7 @@
-// In-place scalar writer for zero-allocation parsing (M2).
+// In-place scalar writer for zero-allocation parsing.
 // Maintains write cursor w <= read cursor r (limit) in the buffer.
 // Spills to Arena on growth overflow (\L, \P) when a spill allocator is present.
-// Blanks leftover [w, orig_end) with spaces upon completion (M7).
+// Blanks leftover [w, orig_end) with spaces upon completion.
 module yaml::parser;
 
 import std::io;

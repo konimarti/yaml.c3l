@@ -1,5 +1,4 @@
-// v2: core schema helpers. Card (b) owns this file; cards (c) and (d) call these signatures.
-// The bodies are the old builder.c3 code, moved verbatim.
+// Core schema resolution helpers.
 module yaml;
 
 const String TAG_STR = "tag:yaml.org,2002:str";
