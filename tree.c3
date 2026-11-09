@@ -1,9 +1,9 @@
 // v2 contract. Card (b) owns this file. The types and the primitives below are FROZEN (cards
 // (c), (d) and the test fixtures build hand-made trees with them); (b) may add to the file.
 // The structs are public so that test modules can see them; users never touch them.
-module yaml2;
+module yaml;
 
-import yaml2::parser;
+import yaml::parser;
 
 enum NodeKind : char { STREAM, MAP, SEQ, SCALAR }   // an alias is a flag, not a kind
 enum Schema : char { NULL, BOOL, INT, FLOAT, STR }  // scalars: core schema type, resolved by the builder

@@ -1,8 +1,8 @@
-module yaml2::port_schema_test;
+module yaml::port_schema_test;
 
 import std::io;
-import yaml2;
-import yaml2::port_test_util;
+import yaml;
+import yaml::port_test_util;
 
 fn void core_ints() @test => @pool()
 {
@@ -12,7 +12,7 @@ fn void core_ints() @test => @pool()
 fn void core_floats() @test => @pool()
 {
 	test::eq(port_test_util::json("[1e3, .5, 1., -2.5E-1, 0.1]")!!, "[1000.0,0.5,1.0,-0.25,0.1]\n");
-	Yaml data = yaml2::from_string("[-.Inf, .inf, .nan, .NaN]", mem, false)!!;
+	Yaml data = yaml::from_string("[-.Inf, .inf, .nan, .NaN]", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("0")!!.as_float()!!, -double::inf);
 	test::eq(data.get("1")!!.as_float()!!, double::inf);
@@ -39,16 +39,16 @@ fn void not_resolved() @test => @pool()
 fn void forced_types() @test => @pool()
 {
 	test::eq(port_test_util::json(`[!!float 1, !!int "7", !!null "", !!bool "true", !!str ~]`)!!, "[1.0,7,null,true,\"~\"]\n");
-	Yaml data = yaml2::from_string("!!float 1", mem, false)!!;
+	Yaml data = yaml::from_string("!!float 1", mem, false)!!;
 	defer data.free();
 	assert(data.get("")!!.kind() == FLOAT);
 }
 
 fn void tag_mismatch() @test => @pool()
 {
-	test::@error(port_test_util::json("!!int x"), yaml2::INVALID_INPUT_FORMAT);
-	test::@error(port_test_util::json("!!bool 1"), yaml2::INVALID_INPUT_FORMAT);
-	test::@error(port_test_util::json("!!null a"), yaml2::INVALID_INPUT_FORMAT);
+	test::@error(port_test_util::json("!!int x"), yaml::INVALID_INPUT_FORMAT);
+	test::@error(port_test_util::json("!!bool 1"), yaml::INVALID_INPUT_FORMAT);
+	test::@error(port_test_util::json("!!null a"), yaml::INVALID_INPUT_FORMAT);
 }
 
 fn void int_overflow_is_float() @test => @pool()
@@ -76,7 +76,7 @@ fn void largest_floats() @test => @pool()
 
 fn void float_out_of_range() @test => @pool()
 {
-	Yaml data = yaml2::from_string("a: 1e400\nb: !!float -1e400\nc: 1" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000\nd: 1e-400\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: 1e400\nb: !!float -1e400\nc: 1" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000\nd: 1e-400\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("a")!!.as_float()!!, double::inf);
 	test::eq(data.get("b")!!.as_float()!!, -double::inf);

@@ -14,11 +14,11 @@ echo "mode,file,bytes,iters,min_ms,median_ms,mb_per_s,allocs,alloc_bytes,peak_li
 for f in bench/data/*.yaml; do
 	base=$(basename "$f")
 	if [ "$base" = "depth-257.yaml" ] || [ "$base" = "flow-key-2041.yaml" ]; then
-		modes="tree tree2 from_buffer events events2"
+		modes="tree from_buffer events"
 	else
-		modes="tree tree2 from_buffer events events2 json json2 foreach foreach2 free free2"
-		[ "$base" = "servers.yaml" ] && modes="$modes decode decode2"
-		[ "$base" = "map-100k.yaml" ] && modes="$modes find find2"
+		modes="tree from_buffer events json foreach free"
+		[ "$base" = "servers.yaml" ] && modes="$modes decode"
+		[ "$base" = "map-100k.yaml" ] && modes="$modes find"
 	fi
 	for m in $modes; do ./build/bench "$m" "$f" "$n" >> "$csv" || echo "failed: $m $f" >&2; done
 done

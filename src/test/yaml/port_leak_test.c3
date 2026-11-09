@@ -1,8 +1,8 @@
 // Memory: every allocation of from_string is released, after a success and after an error.
-module yaml2::port_leak_test;
+module yaml::port_leak_test;
 
 import std::io, std::core::mem::allocators;
-import yaml2, yaml2::parser, yaml2::testing;
+import yaml, yaml::parser, yaml::testing;
 
 // Parses `input` with a tracking allocator. A success is freed twice (the second free must do
 // nothing). Either way nothing may be left allocated.
@@ -11,7 +11,7 @@ fn void check(String input, fault expected = {}) @private
 	TrackingAllocator tracker;
 	tracker.init(mem);
 	defer tracker.free();
-	Yaml? data = yaml2::from_string(input, &tracker, false);
+	Yaml? data = yaml::from_string(input, &tracker, false);
 	if (catch err = data)
 	{
 		assert(expected && err == expected, "unexpected result for %s: %s", input, err);
@@ -31,7 +31,7 @@ fn void check_buffer(String input, fault expected = {}) @private
 	tracker.init(mem);
 	defer tracker.free();
 	char[] buf = testing::writable(input);
-	Yaml? data = yaml2::from_buffer(buf, &tracker, false);
+	Yaml? data = yaml::from_buffer(buf, &tracker, false);
 	if (catch err = data)
 	{
 		assert(expected && err == expected, "unexpected result for %s: %s", input, err);
@@ -72,13 +72,13 @@ fn void multiple_documents() @test => @pool()
 fn void errors_during_the_build() @test => @pool()
 {
 	check("a: [1, 2\n", parser::UNCLOSED_FLOW);
-	check("a: *nope\n", yaml2::UNDEFINED_ALIAS);
-	check("&a [*a]\n", yaml2::UNDEFINED_ALIAS);
-	check("a: &x 1\n---\nb: *x\n", yaml2::UNDEFINED_ALIAS);
-	check("a: 1\nb: [x, *nope]\n", yaml2::UNDEFINED_ALIAS);
+	check("a: *nope\n", yaml::UNDEFINED_ALIAS);
+	check("&a [*a]\n", yaml::UNDEFINED_ALIAS);
+	check("a: &x 1\n---\nb: *x\n", yaml::UNDEFINED_ALIAS);
+	check("a: 1\nb: [x, *nope]\n", yaml::UNDEFINED_ALIAS);
 	check("a: 1\nb: [x, {y: 2}]\nc: - d\n", parser::SYNTAX_ERROR);
 	check("a: 1\nb: [x, y]\nbad\n", parser::MISSING_COLON);
-	check("- a\n- &x [b]\n---\n- *y\n", yaml2::UNDEFINED_ALIAS);
+	check("- a\n- &x [b]\n---\n- *y\n", yaml::UNDEFINED_ALIAS);
 	DString deep = dstring::temp();
 	deep.append_repeat('[', parser::MAX_DEPTH + 1);
 	check(deep.str_view(), parser::LIMIT_EXCEEDED);
@@ -86,7 +86,7 @@ fn void errors_during_the_build() @test => @pool()
 	ok_then_bad.append("a: &x [1, 2]\nb:\n");
 	for (int i = 0; i < 40; i++) ok_then_bad.appendf("%*c- [*x, *x]\n", 2, ' ');
 	ok_then_bad.append("c: *missing\n");
-	check(ok_then_bad.str_view(), yaml2::UNDEFINED_ALIAS);
+	check(ok_then_bad.str_view(), yaml::UNDEFINED_ALIAS);
 }
 
 fn void spilled_scalars_and_from_buffer() @test => @pool()
@@ -96,12 +96,12 @@ fn void spilled_scalars_and_from_buffer() @test => @pool()
 	check("k: \"\\P\"\n");
 	check("k: \"\\L\\P\\L\\P\"\n");
 	check("k: \"\\L\", bad\n", parser::SYNTAX_ERROR);
-	check("a: &x \"\\L\"\nb: *missing\n", yaml2::UNDEFINED_ALIAS);
+	check("a: &x \"\\L\"\nb: *missing\n", yaml::UNDEFINED_ALIAS);
 
 	// from_buffer paths (owns_input = false)
 	check_buffer("a: 1\nb: [2, 3]\nc: {d: 4}\n");
 	check_buffer("k: \"\\L\\P\"\n");
 	check_buffer("a: [1, 2\n", parser::UNCLOSED_FLOW);
-	check_buffer("a: *nope\n", yaml2::UNDEFINED_ALIAS);
+	check_buffer("a: *nope\n", yaml::UNDEFINED_ALIAS);
 	check_buffer("a: 1\nb: [x, y]\nbad\n", parser::MISSING_COLON);
 }

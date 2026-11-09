@@ -1,11 +1,11 @@
 // Tests for the token queue (M3).
 // Flow-map key of exactly 2040 tokens passes, 2041 fails with LIMIT_EXCEEDED.
 // 256 nested block levels closed at EOF (burst of 256 BLOCK_END) fits in the ring.
-module yaml2::parser_test;
+module yaml::parser_test;
 
 import std::io;
-import yaml2::parser;
-import yaml2::testing;
+import yaml::parser;
+import yaml::testing;
 
 fn void queue_key_length_boundary() @test => @pool()
 {

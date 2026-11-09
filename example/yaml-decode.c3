@@ -1,4 +1,4 @@
-// c3c compile-run example/yaml-decode.c3 ./*.c3   (from the repository root)
+// c3c compile-run example/yaml-decode.c3 *.c3   (from the repository root)
 module yamldecode;
 import std::io, yaml;
 

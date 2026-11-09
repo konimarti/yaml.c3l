@@ -1,12 +1,12 @@
-module yaml2::port_api_test;
+module yaml::port_api_test;
 
 import std::io, libc;
-import yaml2, yaml2::parser;
-import yaml2::port_test_util;
+import yaml, yaml::parser;
+import yaml::port_test_util;
 
 fn void get_path() @test => @pool()
 {
-	Yaml data = yaml2::from_string("a:\n  b: [x, y]\n  c: 1\n", mem, false)!!;
+	Yaml data = yaml::from_string("a:\n  b: [x, y]\n  c: 1\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("a.b.0")!!.as_string()!!, "x");
 	test::eq(data["a.b.1"].as_string()!!, "y");
@@ -19,21 +19,21 @@ fn void get_path() @test => @pool()
 
 fn void documents() @test => @pool()
 {
-	Yaml data = yaml2::from_string("a\n---\nx: 1\n---\nc\n", mem, false)!!;
+	Yaml data = yaml::from_string("a\n---\nx: 1\n---\nc\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.len(), 3);
 	test::eq(data.get_in(1, "x")!!.as_int()!!, 1);
 	test::eq(data.get("")!!.as_string()!!, "a");
 	test::@error(data.get_in(3, "x"), NOT_FOUND);
 	test::eq(string::tformat("%s", data), "\"a\"\n{\"x\":1}\n\"c\"\n");
-	Yaml empty = yaml2::from_string("", mem, false)!!;
+	Yaml empty = yaml::from_string("", mem, false)!!;
 	test::eq(empty.len(), 0);
 	empty.free();
 }
 
 fn void alias_copies() @test => @pool()
 {
-	Yaml data = yaml2::from_string("a: &x {k: [1, 2]}\nb: *x\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: &x {k: [1, 2]}\nb: *x\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("b.k.1")!!.as_int()!!, 2);
 	// In v2, an alias has its own node ID, but shares the subtree of its target without deep copying
@@ -44,7 +44,7 @@ fn void alias_copies() @test => @pool()
 fn void alias_after_duplicate_key() @test => @pool()
 {
 	// the anchored node is shadowed by the duplicate key; the alias still works
-	Yaml data = yaml2::from_string("a: &x [1]\na: 2\nb: *x\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: &x [1]\na: 2\nb: *x\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("b.0")!!.as_int()!!, 1);
 	test::eq(data.get("a")!!.as_int()!!, 2);
@@ -60,7 +60,7 @@ fn void key_anchors_and_alias() @test => @pool()
 	};
 	foreach (s : inputs)
 	{
-		Yaml data = yaml2::from_string(s, mem, false)!!;
+		Yaml data = yaml::from_string(s, mem, false)!!;
 		defer data.free();
 		if (data.doc(0).is_seq())
 		{
@@ -75,8 +75,8 @@ fn void key_anchors_and_alias() @test => @pool()
 
 fn void undefined_alias() @test => @pool()
 {
-	test::@error(yaml2::from_string("a: *x\n", mem, false), yaml2::UNDEFINED_ALIAS);
-	test::@error(yaml2::from_string("&x [*x]\n", mem, false), yaml2::UNDEFINED_ALIAS);
+	test::@error(yaml::from_string("a: *x\n", mem, false), yaml::UNDEFINED_ALIAS);
+	test::@error(yaml::from_string("&x [*x]\n", mem, false), yaml::UNDEFINED_ALIAS);
 }
 
 fn void quiet_errors() @test => @pool()
@@ -99,8 +99,8 @@ fn void every_fault_is_reported() @test => @pool()
 	String[*] inputs = { "\"a", "!x!y a", "!!int x", "a: *x", "[a", "|0\n", "- a\nb", "%YAML 2.0\n---\n",
 		"a: &a [x,x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d,*d]\nf: &f [*e,*e,*e,*e,*e,*e,*e,*e,*e,*e]\ng: &g [*f,*f,*f,*f,*f,*f,*f,*f,*f,*f]\nh: &h [*g,*g,*g,*g,*g,*g,*g,*g,*g,*g]\n"
 	};
-	fault[*] faults = { parser::UNCLOSED_QUOTE, parser::UNDEFINED_TAG_HANDLE, yaml2::INVALID_INPUT_FORMAT,
-		yaml2::UNDEFINED_ALIAS, parser::UNCLOSED_FLOW, parser::INVALID_BLOCK_HEADER, parser::MISSING_COLON,
+	fault[*] faults = { parser::UNCLOSED_QUOTE, parser::UNDEFINED_TAG_HANDLE, yaml::INVALID_INPUT_FORMAT,
+		yaml::UNDEFINED_ALIAS, parser::UNCLOSED_FLOW, parser::INVALID_BLOCK_HEADER, parser::MISSING_COLON,
 		parser::INVALID_DIRECTIVE, parser::LIMIT_EXCEEDED };
 	foreach (i, input : inputs)
 	{
@@ -123,7 +123,7 @@ g: &g [*f,*f,*f,*f,*f,*f,*f,*f,*f,*f]
 h: &h [*g,*g,*g,*g,*g,*g,*g,*g,*g,*g]
 i: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h,*h]
 `;
-	test::@error(yaml2::from_string(yaml, &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
+	test::@error(yaml::from_string(yaml, &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
 }
 
 fn void nesting_limit() @test => @pool()
@@ -131,11 +131,11 @@ fn void nesting_limit() @test => @pool()
 	DString deep = dstring::temp();
 	deep.append_repeat('[', 600);
 	deep.append_repeat(']', 600);
-	test::@error(yaml2::from_string(deep.str_view(), mem, false), parser::LIMIT_EXCEEDED);
+	test::@error(yaml::from_string(deep.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 	DString ok = dstring::temp();
 	ok.append_repeat('[', parser::MAX_DEPTH);
 	ok.append_repeat(']', parser::MAX_DEPTH);
-	Yaml data = yaml2::from_string(ok.str_view(), mem, false)!!;
+	Yaml data = yaml::from_string(ok.str_view(), mem, false)!!;
 	data.free();
 }
 
@@ -155,11 +155,11 @@ fn void deep_alias_limit() @test => @pool()
 		s.append("\n");
 		if (depth * 2 > parser::MAX_DEPTH)
 		{
-			test::@error(yaml2::from_string(s.str_view(), mem, false), parser::LIMIT_EXCEEDED);
+			test::@error(yaml::from_string(s.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 		}
 		else
 		{
-			Yaml data = yaml2::from_string(s.str_view(), mem, false)!!;   // 100 + 100 levels fit
+			Yaml data = yaml::from_string(s.str_view(), mem, false)!!;   // 100 + 100 levels fit
 			data.free();
 		}
 	}
@@ -176,7 +176,7 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 	TrackingAllocator tracker;
 	tracker.init(mem);
 	defer tracker.free();
-	Yaml data = yaml2::from_string(s.str_view(), &tracker, false)!!;
+	Yaml data = yaml::from_string(s.str_view(), &tracker, false)!!;
 	defer data.free();
 	assert(tracker.total_allocation_count() < 100_000, "nested anchors must not be copied");
 	DString path = dstring::temp();
@@ -187,7 +187,7 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 // An anchored key and an anchored replaced value can still be aliased
 fn void anchors_outside_the_tree() @test => @pool()
 {
-	Yaml data = yaml2::from_string("&k a: 1\nb: *k\nc: &v [1]\nc: 2\nd: *v\n", mem, false)!!;
+	Yaml data = yaml::from_string("&k a: 1\nb: *k\nc: &v [1]\nc: 2\nd: *v\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("b")!!.as_string()!!, "a");
 	test::eq(data.get("c")!!.as_int()!!, 2);
@@ -197,7 +197,7 @@ fn void anchors_outside_the_tree() @test => @pool()
 // An array index is plain digits
 fn void index_segments() @test => @pool()
 {
-	Yaml data = yaml2::from_string("a: [x, y, z]\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: [x, y, z]\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("a.1")!!.as_string()!!, "y");
 	foreach (path : (String[]){ "a.0x1", "a.+1", "a. 1", "a.", "a.-1", "a.3" }) test::@error(data.get(path), NOT_FOUND);
@@ -205,30 +205,30 @@ fn void index_segments() @test => @pool()
 
 fn void parse_by_input_type() @test => @pool()
 {
-	Yaml a = yaml2::parse("a: 1\n", mem, false)!!;
+	Yaml a = yaml::parse("a: 1\n", mem, false)!!;
 	defer a.free();
 	test::eq(a.get("a")!!.as_int()!!, 1);
 	char[] bytes = "a: 2\n";
-	Yaml b = yaml2::parse(bytes, mem, false)!!;
+	Yaml b = yaml::parse(bytes, mem, false)!!;
 	defer b.free();
 	test::eq(b.get("a")!!.as_int()!!, 2);
 	DString ds = dstring::temp();
 	ds.append("a: 3\n");
-	Yaml c = yaml2::parse(ds, mem, false)!!;
+	Yaml c = yaml::parse(ds, mem, false)!!;
 	defer c.free();
 	test::eq(c.get("a")!!.as_int()!!, 3);
 	ByteReader reader;
 	reader.init("a: 4\n");
-	Yaml d = yaml2::parse(&reader, mem, false)!!;
+	Yaml d = yaml::parse(&reader, mem, false)!!;
 	defer d.free();
 	test::eq(d.get("a")!!.as_int()!!, 4);
-	test::@error(yaml2::parse("a: [1\n", mem, false), parser::UNCLOSED_FLOW);
+	test::@error(yaml::parse("a: [1\n", mem, false), parser::UNCLOSED_FLOW);
 }
 
 // no free: the temp allocator releases it (the test runner reports leaks of other allocators)
 fn void tparse_uses_tmem() @test => @pool()
 {
-	Yaml a = yaml2::tparse("k: v\n", false)!!;
+	Yaml a = yaml::tparse("k: v\n", false)!!;
 	test::eq(a.get("k")!!.as_string()!!, "v");
-	test::@error(yaml2::tparse("k: [", false), parser::UNCLOSED_FLOW);
+	test::@error(yaml::tparse("k: [", false), parser::UNCLOSED_FLOW);
 }

@@ -1,7 +1,7 @@
 // Shared fixtures for the v2 cards (a)-(e): hand-made trees, writable buffers, event listings.
-module yaml2::testing;
+module yaml::testing;
 
-import yaml2, yaml2::parser;
+import yaml, yaml::parser;
 
 // Two documents:
 //   name: x            port: 8080     ratio: 1.5     on: true     none: ~
@@ -14,7 +14,7 @@ const String SAMPLE_JSON =
 
 fn Yaml sample()
 {
-	Tree* t = yaml2::new_tree(mem);
+	Tree* t = yaml::new_tree(mem);
 	uint root = t.add_collection(0, "", MAP);
 	uint name = t.add_scalar(root, "name", "x");
 	t.props_of(name).anchor = t.put("name");
@@ -36,9 +36,9 @@ fn Yaml sample()
 	// aliases: a scalar alias copies the target's text, style and schema; a collection alias points at it
 	uint copy = t.add_scalar(root, "copy", "x");
 	t.nodes[copy].val = t.nodes[name].val;
-	t.nodes[copy].flags |= yaml2::F_ALIAS;
+	t.nodes[copy].flags |= yaml::F_ALIAS;
 	uint again = t.add_collection(root, "again", SEQ);
-	t.nodes[again].flags |= yaml2::F_ALIAS;
+	t.nodes[again].flags |= yaml::F_ALIAS;
 	t.nodes[again].first = list;
 	t.nodes[again].val.len = t.nodes[list].val.len;
 	t.add_scalar(0, "", "second");

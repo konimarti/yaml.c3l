@@ -1,38 +1,91 @@
+// v2 contract. Card (d) owns this file. Same rules, messages and ownership as the old decode.c3
+// (README "Decoding into a struct"); integers go through Node.as_int128 / schema::int_of.
 module yaml;
 
-import std::io, std::collections::list, std::collections::object;
+import std::io, std::collections::list, yaml::parser;
 
-faultdef DECODE_ERROR;
+struct PathFrame @private
+{
+	bool is_index;
+	String name;
+	sz index;
+}
 
 // Where a decode is, for error messages, and what it allocated (to undo that on an error).
 struct DecodeCtx @private
 {
 	Allocator allocator;
 	bool verbose;
-	DString path;
+	bool borrowed;
+	PathFrame[parser::MAX_DEPTH + 8] frames;
+	uint depth;
 	List {void*} owned;
 }
 
-fn String kind_name(Object* o) @private
+fn void DecodeCtx.push_key(&self, String name) @inline
 {
-	switch
+	if (self.depth < self.frames.len)
 	{
-		case o.is_null(): return "null";
-		case o.is_bool(): return "bool";
-		case o.is_int(): return "int";
-		case o.is_float(): return "float";
-		case o.is_string(): return "string";
-		case o.is_array(): return "sequence";
-		default: return "mapping";
+		self.frames[self.depth] = { .is_index = false, .name = name };
+	}
+	self.depth++;
+}
+
+fn void DecodeCtx.push_index(&self, sz idx) @inline
+{
+	if (self.depth < self.frames.len)
+	{
+		self.frames[self.depth] = { .is_index = true, .index = idx };
+	}
+	self.depth++;
+}
+
+fn void DecodeCtx.pop(&self) @inline
+{
+	if (self.depth > 0) self.depth--;
+}
+
+fn String DecodeCtx.build_path(&self)
+{
+	if (self.depth == 0) return "(document)";
+	DString s = dstring::temp();
+	uint n = self.depth < self.frames.len ? self.depth : (uint)self.frames.len;
+	for (uint i = 0; i < n; i++)
+	{
+		if (i > 0) s.append_char('.');
+		if (self.frames[i].is_index)
+		{
+			s.appendf("%d", self.frames[i].index);
+		}
+		else
+		{
+			s.append(self.frames[i].name);
+		}
+	}
+	return s.str_view();
+}
+
+fn String kind_name(Node n) @private
+{
+	switch (n.kind())
+	{
+		case NULL: return "null";
+		case BOOL: return "bool";
+		case INT: return "int";
+		case FLOAT: return "float";
+		case STRING: return "string";
+		case SEQUENCE: return "sequence";
+		case MAPPING: return "mapping";
+		case MISSING: return "missing";
 	}
 }
 
-fn fault DecodeCtx.fail(&self, String expected, Object* o)
+fn fault DecodeCtx.fail(&self, String expected, Node n)
 {
 	if (self.verbose)
 	{
-		String where = self.path.len() ? self.path.str_view() : "(document)";
-		io::eprintfn("%s: expected %s, got %s", where, expected, kind_name(o));
+		String where = self.build_path();
+		io::eprintfn("%s: expected %s, got %s", where, expected, kind_name(n));
 	}
 	return DECODE_ERROR;
 }
@@ -41,88 +94,102 @@ fn fault DecodeCtx.fail_text(&self, String what)
 {
 	if (self.verbose)
 	{
-		String where = self.path.len() ? self.path.str_view() : "(document)";
+		String where = self.build_path();
 		io::eprintfn("%s: %s", where, what);
 	}
 	return DECODE_ERROR;
 }
 
-// Decodes the object `o` as a $Type. Strings and slices are allocated with ctx.allocator.
-fn Type? decode_node(Object* o, DecodeCtx* ctx) <Type> @private
+// Decodes node `n` as a $Type. Strings and slices are allocated with ctx.allocator (unless borrowed).
+fn Type? decode_node_internal(Node n, DecodeCtx* ctx) <Type> @private
 {
 	$switch:
 		$case Type::typeid == String::typeid:
-			if (!o.is_string()) return ctx.fail("string", o)~;
-			String s = o.s.copy(ctx.allocator);
-			if (s.len) ctx.owned.push(s.ptr);
+			if (!n.is_string()) return ctx.fail("string", n)~;
+			String text = n.text();
+			if (ctx.borrowed) return text;
+			String s = text.copy(ctx.allocator);
+			ctx.owned.push(s.ptr);
 			return s;
 		$case Type::kind == BOOL:
-			if (!o.is_bool()) return ctx.fail("bool", o)~;
-			return o.b;
+			if (!n.is_bool()) return ctx.fail("bool", n)~;
+			bool? b = n.as_bool();
+			if (catch b) return ctx.fail("bool", n)~;
+			return b;
 		$case Type::kind == SIGNED_INT:
-			if (!o.is_int()) return ctx.fail("int", o)~;
+			if (!n.is_int()) return ctx.fail("int", n)~;
+			int128? vi = n.as_int128();
+			if (catch vi) return ctx.fail("int", n)~;
 			$if Type::size < 16:
-				if (o.i < (int128)Type::min || o.i > (int128)Type::max) return ctx.fail_text(string::tformat("%d is out of range", o.i))~;
+				if (vi < (int128)Type::min || vi > (int128)Type::max) return ctx.fail_text(string::tformat("%d is out of range", vi))~;
 			$endif
-			return (Type)o.i;
+			return (Type)vi;
 		$case Type::kind == UNSIGNED_INT:
-			if (!o.is_int()) return ctx.fail("int", o)~;
+			if (!n.is_int()) return ctx.fail("int", n)~;
+			int128? vi = n.as_int128();
+			if (catch vi) return ctx.fail("int", n)~;
 			$if Type::size < 16:
-				if (o.i < 0 || o.i > (int128)Type::max) return ctx.fail_text(string::tformat("%d is out of range", o.i))~;
+				if (vi < 0 || vi > (int128)Type::max) return ctx.fail_text(string::tformat("%d is out of range", vi))~;
 			$else
-				if (o.i < 0) return ctx.fail_text(string::tformat("%d is out of range", o.i))~;
+				if (vi < 0) return ctx.fail_text(string::tformat("%d is out of range", vi))~;
 			$endif
-			return (Type)o.i;
+			return (Type)vi;
 		$case Type::kind == FLOAT:
-			if (o.is_float()) return (Type)o.f;
-			if (o.is_int()) return (Type)o.i;
-			return ctx.fail("float", o)~;
+			if (n.is_float() || n.is_int())
+			{
+				double? d = n.as_float();
+				if (try d) return (Type)d;
+			}
+			return ctx.fail("float", n)~;
 		$case Type::kind == ENUM:
-			if (!o.is_string()) return ctx.fail("an enum name", o)~;
+			if (!n.is_string()) return ctx.fail("an enum name", n)~;
+			String txt = n.text();
 			foreach (i, name : Type::names)
 			{
-				if (name == o.s) return Type::values[i];
+				if (name == txt) return Type::values[i];
 			}
-			return ctx.fail_text(string::tformat("'%s' is not a name of the enum", o.s))~;
+			return ctx.fail_text(string::tformat("'%s' is not a name of the enum", txt))~;
 		$case Type::kind == STRUCT:
-			if (!o.is_map()) return ctx.fail("mapping", o)~;
+			if (!n.is_map()) return ctx.fail("mapping", n)~;
 			Type t;
-			$foreach $m : Type::members:
-				if (o.has_key($m.name) && !o.get($m.name)!!.is_null())
-				{
-					sz mark = ctx.path.len();
-					if (mark) ctx.path.append_char('.');
-					ctx.path.append($m.name);
-					t.$eval($m.name) = decode_node{$Typefrom($m.type)}(o.get($m.name)!!, ctx)!;
-					ctx.path.chop(mark);
-				}
-			$endforeach
+			foreach (e : n.entries())
+			{
+				$foreach $m : Type::members:
+					if (e.key == $m.name)
+					{
+						if (!e.value.is_null())
+						{
+							ctx.push_key($m.name);
+							t.$eval($m.name) = decode_node_internal{$Typefrom($m.type)}(e.value, ctx)!;
+							ctx.pop();
+						}
+						continue;
+					}
+				$endforeach
+			}
 			return t;
 		$case Type::kind == ARRAY:
-			if (!o.is_array()) return ctx.fail("sequence", o)~;
-			if (o.get_len() > Type::len) return ctx.fail_text(string::tformat("sequence has %d items, at most %d fit", o.get_len(), Type::len))~;
+			if (!n.is_seq()) return ctx.fail("sequence", n)~;
+			sz len = n.len();
+			if (len > Type::len) return ctx.fail_text(string::tformat("sequence has %d items, at most %d fit", len, Type::len))~;
 			Type t;
-			for (sz i = 0; i < o.get_len(); i++)
+			foreach (i, item : n.items())
 			{
-				sz mark = ctx.path.len();
-				if (mark) ctx.path.append_char('.');
-				ctx.path.appendf("%d", i);
-				t[i] = decode_node{$Typefrom(Type::inner)}(o.get_at(i), ctx)!;
-				ctx.path.chop(mark);
+				ctx.push_index(i);
+				t[i] = decode_node_internal{$Typefrom(Type::inner)}(item, ctx)!;
+				ctx.pop();
 			}
 			return t;
 		$case Type::kind == SLICE:
-			if (!o.is_array()) return ctx.fail("sequence", o)~;
-			sz n = o.get_len();
-			Type t = alloc::new_array(ctx.allocator, $Typefrom(Type::inner), n);
-			if (n) ctx.owned.push(t.ptr);
-			for (sz i = 0; i < n; i++)
+			if (!n.is_seq()) return ctx.fail("sequence", n)~;
+			sz count = n.len();
+			Type t = alloc::new_array(ctx.allocator, $Typefrom(Type::inner), count);
+			if (count) ctx.owned.push(t.ptr);
+			foreach (i, item : n.items())
 			{
-				sz mark = ctx.path.len();
-				if (mark) ctx.path.append_char('.');
-				ctx.path.appendf("%d", i);
-				t[i] = decode_node{$Typefrom(Type::inner)}(o.get_at(i), ctx)!;
-				ctx.path.chop(mark);
+				ctx.push_index(i);
+				t[i] = decode_node_internal{$Typefrom(Type::inner)}(item, ctx)!;
+				ctx.pop();
 			}
 			return t;
 		$default:
@@ -130,29 +197,50 @@ fn Type? decode_node(Object* o, DecodeCtx* ctx) <Type> @private
 	$endswitch
 }
 
-// Decodes document `doc` of `yaml` into a Type. Members whose key is missing (or null) keep
-// their default, unknown keys are ignored. A mismatch or an out-of-range integer fails with
-// DECODE_ERROR (and prints the path of the value, e.g. `db.ports.1: expected int, got string`,
-// when `verbose`).
-//
-// Memory: every String and slice in the result is allocated with `allocator`; use tmem or an
-// arena to free it all at once, or free each of them. On an error nothing stays allocated.
-fn Type? decode_in(Yaml yaml, sz doc, Allocator allocator = mem, bool verbose = true) <Type>
+fn Type? decode_node_entry(Node n, Allocator allocator, bool verbose, bool borrowed) <Type> @private
 {
-	if (doc >= yaml.docs.len()) return NOT_FOUND~;
+	if (!n.exists() || n.kind() == MISSING) return NOT_FOUND~;
+	if (allocator == tmem)
+	{
+		DecodeCtx ctx = { .allocator = allocator, .verbose = verbose, .borrowed = borrowed };
+		return decode_node_internal{Type}(n, &ctx);
+	}
 	@pool()
 	{
-		DecodeCtx ctx = { .allocator = allocator, .verbose = verbose, .path = dstring::temp() };
+		DecodeCtx ctx = { .allocator = allocator, .verbose = verbose, .borrowed = borrowed };
 		ctx.owned.tinit();
-		Type? result = decode_node{Type}(yaml.docs[doc], &ctx);
+		Type? result = decode_node_internal{Type}(n, &ctx);
 		if (catch err = result)
 		{
-			foreach (p : ctx.owned) alloc::free(allocator, p);
+			for (sz i = ctx.owned.len(); i > 0; i--) alloc::free(allocator, ctx.owned[i - 1]);
 			return err~;
 		}
 		return result;
 	};
 }
 
-// The first document: `Config c = yaml::decode{Config}(data)!;`
+// A method cannot be generic (verified on 0.8.6), so: a free generic function and a macro method.
+//   Config c = yaml::decode{Config}(data)!!;      Config c = node.decode(Config)!!;
+fn Type? decode_node(Node n, Allocator allocator = mem, bool verbose = true) <Type> => decode_node_entry{Type}(n, allocator, verbose, false);
+macro Node.decode(self, $Type, Allocator allocator = mem, bool verbose = true) => decode_node{$Type}(self, allocator, verbose);
+
+fn Type? decode_in(Yaml yaml, sz doc, Allocator allocator = mem, bool verbose = true) <Type>
+{
+	if (!yaml.tree || doc >= yaml.len()) return NOT_FOUND~;
+	return decode_node{Type}(yaml.doc(doc), allocator, verbose);
+}
+
 fn Type? decode(Yaml yaml, Allocator allocator = mem, bool verbose = true) <Type> => decode_in{Type}(yaml, 0, allocator, verbose);
+macro Yaml.decode(self, $Type, sz doc = 0, Allocator allocator = mem, bool verbose = true) => decode_in{$Type}(self, doc, allocator, verbose);
+
+// Zero string allocations: the Strings of the result are views into the tree (valid while the
+// Yaml lives). Slices of the result are still allocated with `allocator`.
+fn Type? decode_borrowed(Node n, Allocator allocator = mem, bool verbose = true) <Type> => decode_node_entry{Type}(n, allocator, verbose, true);
+macro Node.decode_borrowed(self, $Type, Allocator allocator = mem, bool verbose = true) => decode_borrowed{$Type}(self, allocator, verbose);
+
+fn Type? decode_borrowed_in(Yaml yaml, sz doc, Allocator allocator = mem, bool verbose = true) <Type>
+{
+	if (!yaml.tree || doc >= yaml.len()) return NOT_FOUND~;
+	return decode_borrowed{Type}(yaml.doc(doc), allocator, verbose);
+}
+macro Yaml.decode_borrowed(self, $Type, sz doc = 0, Allocator allocator = mem, bool verbose = true) => decode_borrowed_in{$Type}(self, doc, allocator, verbose);

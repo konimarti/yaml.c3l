@@ -1,8 +1,7 @@
-// Card 0 checks: the fixtures, the tree primitives and the M1 shim agree with the old code.
-module yaml2::contract_test;
+// Card 0 checks: the fixtures, the tree primitives and and the spans.
+module yaml::contract_test;
 
-import yaml2, yaml2::parser, yaml2::testing;
-import yaml::test_util;
+import yaml, yaml::parser, yaml::testing;
 
 fn void node_is_36_bytes() @test
 {
@@ -13,7 +12,7 @@ fn void node_is_36_bytes() @test
 
 fn void sample_tree_shape() @test
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 	Tree* t = y.tree;
 	test::eq((int)t.ndocs, 2);
@@ -39,16 +38,4 @@ fn void spans() @test
 	test::eq(parser::resolve({}, &a, parser::const_span(parser::CONST_TAG_PRIMARY)), "!");
 	char[3] buf = { 'a', 'b', 'c' };
 	test::eq(parser::resolve(&buf, &a, { 1, 2 }), "bc");
-}
-
-// The shim prints the same event lines as the old parser.
-fn void shim_events_match_the_old_parser() @test => @pool()
-{
-	foreach (s : (String[]){
-		"a: 1\nb: [x, 'y', \"z\\n\"]\n", "--- !!str &a text\n...\n", "%TAG !e! tag:example.com,2000:\n---\n!e!foo bar\n",
-		"- &x [1, 2]\n- *x\n- |\n  lit\n", "? [a, b]\n: c\n", "" })
-	{
-		test::eq(testing::events(s)!!, test_util::events(s)!!);
-	}
-	test::@error(testing::events("a: [b\n"), parser::UNCLOSED_FLOW);
 }

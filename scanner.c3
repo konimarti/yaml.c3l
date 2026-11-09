@@ -1,6 +1,9 @@
-// Scanner: characters -> tokens (libyaml style: indent stack, simple keys, one token queue).
+// Scanner: characters -> tokens for zero-allocation parsing.
+// Ring token queue (QUEUE_SIZE = 2048), fixed indent stack (MAX_DEPTH = 256),
+// fixed simple keys, in-place scalar decoding via InPlaceWriter.
 module yaml::parser @private;
-import std::io, std::collections::list;
+
+import std::io;
 
 enum TokenType : char
 {
@@ -11,103 +14,146 @@ enum TokenType : char
 	T_ANCHOR, T_ALIAS, T_TAG, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE
 }
 
-// value: scalar text, anchor/alias name, tag suffix, YAML version, TAG prefix or directive name.
-// handle: tag handle ("" for a verbatim tag) or TAG directive handle.
-// implied_*: the token is a simple key, preceded by a BLOCK_MAPPING_START and/or a KEY that
-// fetch_value found later; flags instead of an O(n) insert into a long queue.
+const char FLAG_IMPLIED_MAP = 1;
+const char FLAG_IMPLIED_KEY = 2;
+
 struct Token
 {
+	Span value;
+	uint handle_off;
+	uint pos;
+	uint line;
+	ushort col;
+	ushort handle_len;
 	TokenType type;
-	Mark start;
-	String value;
-	String handle;
 	ScalarStyle style;
-	bool implied_mapping_start;
-	bool implied_key;
+	char flags;
+	char pad;
 }
 
-// A possible implicit key: the token that may become a KEY when a ':' follows on the same line.
+fn Mark Token.start(self) @inline => { (sz)self.pos, (int)self.line, (int)self.col };
+fn Span Token.handle(self) @inline => { self.handle_off, (uint)self.handle_len };
+fn bool Token.implied_mapping_start(self) @inline => (self.flags & FLAG_IMPLIED_MAP) != 0;
+fn bool Token.implied_key(self) @inline => (self.flags & FLAG_IMPLIED_KEY) != 0;
+
+const char KEY_POSSIBLE   = 1;
+const char KEY_REQUIRED   = 2;
+const char KEY_COMPACT_OK = 4;
+const char KEY_TAB_INDENT = 8;
+const char KEY_FLOW_MAP   = 16;
+
 struct SimpleKey
 {
-	bool possible;
-	bool required;     // block context and key at the current indent: losing it is an error
-	bool compact_ok;   // may open a new block mapping on this line
-	bool tab_indent;   // its line has a TAB in the indentation
-	bool flow_map;     // the level is a flow mapping: the key may span lines ("{a\n: b}")
-	sz token_number;   // absolute token index (tokens_taken + position after the queue head)
-	Mark mark;
+	sz token_number;   // absolute token index (tokens_taken + position after queue head)
+	uint pos;
+	uint line;
+	ushort col;
+	char flags;
+	char pad;
 }
+
+fn Mark SimpleKey.mark(self) @inline => { (sz)self.pos, (int)self.line, (int)self.col };
+fn bool SimpleKey.possible(self) @inline => (self.flags & KEY_POSSIBLE) != 0;
+fn bool SimpleKey.required(self) @inline => (self.flags & KEY_REQUIRED) != 0;
+fn bool SimpleKey.compact_ok(self) @inline => (self.flags & KEY_COMPACT_OK) != 0;
+fn bool SimpleKey.tab_indent(self) @inline => (self.flags & KEY_TAB_INDENT) != 0;
+fn bool SimpleKey.flow_map(self) @inline => (self.flags & KEY_FLOW_MAP) != 0;
 
 struct Scanner
 {
-	String s;
+	char[] s;
+	Arena* arena;
+	Allocator spill;
 	Mark mark;
-	sz invalid_at;             // the first byte that may not appear in a YAML stream, or s.len
+	sz invalid_at;
 	bool verbose;
-	List {Token} tokens;
-	sz tokens_taken;           // tokens already handed to the parser
-	sz head;                   // index of the next token in `tokens` (no O(n) pop_first)
+	bool prev_blank;
+
+	Token[QUEUE_SIZE] tokens;
+	uint head;
+	uint count;
+	sz tokens_taken;
+
 	bool stream_start_done;
 	bool stream_end_done;
-	int indent;                // 0-based column of the current block, -1 at stream level
-	List {int} indents;
+	int indent;
+	int[MAX_DEPTH + 2] indents;
+	int indents_len;
+
 	bool simple_key_allowed;
-	bool compact_ok;           // true at line start and after '-', '?', ':'(explicit) + spaces
-	bool tab_indent;           // current line has a TAB before its first token
-	List {SimpleKey} keys;     // one possible simple key per flow level, [0] = block context
-	int flow_level;            // depth of '[' / '{' nesting
-	bool json_node;            // the last token is a quoted scalar or a flow end ("{"a":b}")
+	bool compact_ok;
+	bool tab_indent;
+
+	SimpleKey[MAX_DEPTH + 2] keys;
+	int keys_len;
+
+	int flow_level;
+	bool json_node;
 }
 
-fn void Scanner.init(&self, String s, bool verbose = true)
+const String BOM = "\xef\xbb\xbf";   // U+FEFF, the UTF-8 byte order mark
+
+fn void Scanner.init(&self, char[] buf, bool verbose, Arena* arena, Allocator spill)
 {
-	if (s.starts_with(BOM)) s = s[BOM.len..];   // a byte order mark is not content
-	*self = { .s = normalize_breaks(s), .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
-	self.invalid_at = first_invalid(self.s);
-	self.tokens.tinit();
-	self.indents.tinit();
-	self.keys.tinit();
-	self.keys.push({});
-}
+	*self = {
+		.verbose = verbose,
+		.arena = arena,
+		.spill = spill,
+		.indent = -1,
+		.prev_blank = true,
+	};
 
-// The simple key slot of the current flow level.
-fn SimpleKey* Scanner.simple_key(&self) @inline => self.keys.get_ref(self.keys.len() - 1);
-
-fn bool is_flow_indicator(char c) => c == ',' || c == '[' || c == ']' || c == '{' || c == '}';
-
-// "\r\n" and "\r" are line breaks: rewrite them as "\n" (a tmem copy, only if needed).
-fn String normalize_breaks(String s)
-{
-	if (!s.contains_char('\r')) return s;
-	DString out = dstring::temp();
-	foreach (i, c : s)
+	// In-place CRLF compaction: \r\n and \r -> \n
+	uint r = 0;
+	uint w = 0;
+	uint blen = (uint)buf.len;
+	while (r < blen)
 	{
-		if (c != '\r')
+		char c = buf[r++];
+		if (c == '\r')
 		{
-			out.append_char(c);
+			buf[w++] = '\n';
+			if (r < blen && buf[r] == '\n') r++;
 		}
-		else if (i + 1 >= s.len || s[i + 1] != '\n')
+		else
 		{
-			out.append_char('\n');
+			buf[w++] = c;
 		}
 	}
-	return out.str_view();
+	self.s = buf[0:w];
+
+	// Leading BOM: do NOT remove from buf, start scanning at byte 3
+	if (((String)self.s).starts_with(BOM))
+	{
+		self.mark = { 3, 1, 1 };
+	}
+	else
+	{
+		self.mark = { 0, 1, 1 };
+	}
+
+	self.invalid_at = first_invalid((String)self.s, self.mark.pos);
+
+	self.keys[0] = {};
+	self.keys_len = 1;
 }
 
-// YAML 1.2.2 5.1: the printable Unicode characters (TAB, LF, CR, no other C0/C1 control, no DEL,
-// surrogate, FFFE or FFFF).
+fn SimpleKey* Scanner.simple_key(&self) @inline => &self.keys[self.keys_len - 1];
+
+fn bool is_flow_indicator(char c) => c == ',' || c == '[' || c == ']' || c == '{' || c == '}';
+fn bool is_blankz(char c) => c.is_blank() || c == '\n' || c == '\0';
+
 fn bool is_printable(Char32 c)
 {
 	return c == '\t' || c == '\n' || c == '\r' || (c >= 0x20 && c <= 0x7e) || c == 0x85
 		|| (c >= 0xa0 && c <= 0xd7ff) || (c >= 0xe000 && c <= 0xfffd) || c >= 0x10000;
 }
 
-// The position of the first byte that is not valid UTF-8 (5.2) or not printable, or s.len.
-fn sz first_invalid(String s)
+fn sz first_invalid(String s, sz start_pos)
 {
-	for (sz i = 0; i < s.len;)
+	for (sz i = start_pos; i < s.len;)
 	{
-		if (s[i] >= 0x20 && s[i] < 0x7f)   // most of the input
+		if (s[i] >= 0x20 && s[i] < 0x7f)
 		{
 			i++;
 			continue;
@@ -123,17 +169,19 @@ fn sz first_invalid(String s)
 
 fn int Scanner.col(&self) @inline => self.mark.column - 1;
 fn bool Scanner.at_end(&self) @inline => self.mark.pos >= self.s.len;
+
 fn char Scanner.peek(&self, sz offset = 0)
 {
 	sz i = self.mark.pos + offset;
 	return i < self.s.len ? self.s[i] : '\0';
 }
-fn bool is_blankz(char c) => c.is_blank() || c == '\n' || c == '\0';   // '\0': the end; no '\r' after normalize_breaks
 
 fn void Scanner.advance(&self)
 {
 	if (self.at_end()) return;
-	if (self.s[self.mark.pos] == '\n')
+	char c = self.s[self.mark.pos];
+	self.prev_blank = is_blankz(c);
+	if (c == '\n')
 	{
 		self.mark.line++;
 		self.mark.column = 1;
@@ -145,98 +193,123 @@ fn void Scanner.advance(&self)
 	self.mark.pos++;
 }
 
-// Report an error (unless !verbose) and return its fault: `return self.error(m, msg)~;`.
 fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 {
 	if (self.verbose)
 	{
-		// the line around the error, at most EXCERPT bytes on each side and not inside a
-		// UTF-8 character: a long line cannot flood stderr
 		const sz EXCERPT = 60;
-		sz start = m.pos;
-		while (start > 0 && m.pos - start < EXCERPT && self.s[start - 1] != '\n') start--;
+		sz col_offset = m.column > 1 ? (sz)(m.column - 1) : 0;
+		sz start = m.pos >= col_offset ? m.pos - col_offset : 0;
+		if (m.pos - start > EXCERPT) start = m.pos - EXCERPT;
 		while (start < m.pos && conv::is_cont(self.s[start])) start++;
-		sz end = m.pos;
+
+		sz end = m.pos < self.s.len ? m.pos : self.s.len;
 		while (end < self.s.len && end - m.pos < EXCERPT && self.s[end] != '\n') end++;
 		while (end > m.pos && end < self.s.len && conv::is_cont(self.s[end])) end--;
+		if (end < start) end = start;
+
 		(void)io::eprintfn("YAML ERROR -- Line %d, Col %d: %s", m.line, m.column, msg);
 		int caret;
-		(void)io::eprintn(printable_excerpt(self.s[start:end - start], m.pos - start, &caret));
+		print_excerpt((String)self.s[start:end - start], m.pos - start, &caret);
 		(void)io::eprintfn("%*s^", caret, "");
 	}
 	return f;
 }
 
-// `line` with every control character and invalid UTF-8 byte as '?', so a rejected input
-// cannot send escape sequences to the terminal; `*caret` gets the character column of `at`.
-fn String printable_excerpt(String line, sz at, int* caret)
+fn void print_excerpt(String line, sz at, int* caret)
 {
-	DString out = dstring::temp();
-	for (sz i = 0; i < line.len;)
+	char[256] out_buf;
+	sz out_len = 0;
+	*caret = 0;
+	for (sz i = 0; i < line.len && out_len < 250;)
 	{
-		if (i <= at) *caret = (int)conv::utf8_codepoints(out.str_view());
+		if (i <= at) *caret = (int)conv::utf8_codepoints((String)out_buf[0:out_len]);
 		sz size = line.len - i;
 		Char32? c = conv::utf8_to_char32(&line[i], &size);
 		if (catch c) size = 1;
 		if (try c && is_printable(c) && c != '\n')
 		{
-			out.append(line[i:size]);
+			for (sz k = 0; k < size && out_len < 250; k++) out_buf[out_len++] = line[i + k];
 		}
 		else
 		{
-			out.append_char('?');
+			out_buf[out_len++] = '?';
 		}
 		i += size;
 	}
-	if (at >= line.len) *caret = (int)conv::utf8_codepoints(out.str_view());
-	return out.str_view();
+	if (at >= line.len) *caret = (int)conv::utf8_codepoints((String)out_buf[0:out_len]);
+	(void)io::eprintn((String)out_buf[0:out_len]);
 }
 
-// ---- token queue ---------------------------------------------------------
+// ---- token ring queue -----------------------------------------------------
+
+fn sz Scanner.ring_index(&self, sz number) @inline
+{
+	sz dist = number - self.tokens_taken;
+	return (sz)((self.head + (uint)dist) % QUEUE_SIZE);
+}
+
+fn void? Scanner.push(&self, TokenType type, Mark m, Span value = {}, ScalarStyle style = PLAIN, Span handle = {})
+{
+	if (self.count >= QUEUE_SIZE) return self.error(m, "token queue overflow", LIMIT_EXCEEDED)~;
+	if (m.column > 65535) return self.error(m, "column limit exceeded", LIMIT_EXCEEDED)~;
+	if (handle.len > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
+	uint idx = (self.head + self.count) % QUEUE_SIZE;
+	self.tokens[idx] = {
+		.value = value,
+		.handle_off = handle.off,
+		.handle_len = (ushort)handle.len,
+		.pos = (uint)m.pos,
+		.line = (uint)m.line,
+		.col = (ushort)m.column,
+		.type = type,
+		.style = style,
+	};
+	self.count++;
+}
 
 fn Token? Scanner.next_token(&self)
 {
 	Token t = self.peek_token()!;
-	Token* head = self.tokens.get_ref(self.head);
+	Token* head_tok = &self.tokens[self.head];
 	switch
 	{
-		case head.implied_mapping_start: head.implied_mapping_start = false;   // the head stays
-		case head.implied_key: head.implied_key = false;
+		case head_tok.implied_mapping_start(): head_tok.flags &= (char)~FLAG_IMPLIED_MAP;
+		case head_tok.implied_key(): head_tok.flags &= (char)~FLAG_IMPLIED_KEY;
 		default:
 			self.tokens_taken++;
-			self.head++;
-			if (self.head == self.tokens.len())   // the queue is reset once it is drained
-			{
-				self.tokens.clear();
-				self.head = 0;
-			}
+			self.head = (self.head + 1) % QUEUE_SIZE;
+			self.count--;
 	}
 	return t;
 }
 
-// The position in `tokens` of the absolute token index `number`.
-fn sz Scanner.queue_index(&self, sz number) @inline => self.head + number - self.tokens_taken;
-
-// The head token, or the BLOCK_MAPPING_START / KEY implied before it.
 fn Token? Scanner.peek_token(&self)
 {
 	self.fetch_more_tokens()!;
 	Token t = self.tokens[self.head];
-	if (t.implied_mapping_start) return { .type = T_BLOCK_MAPPING_START, .start = t.start };
-	if (t.implied_key) return { .type = T_KEY, .start = t.start };
+	if (t.implied_mapping_start()) return { .type = T_BLOCK_MAPPING_START, .pos = t.pos, .line = t.line, .col = t.col };
+	if (t.implied_key()) return { .type = T_KEY, .pos = t.pos, .line = t.line, .col = t.col };
 	return t;
 }
 
-// Fetch until the head token can no longer become a KEY.
 fn void? Scanner.fetch_more_tokens(&self)
 {
 	while (true)
 	{
-		if (self.tokens.len() > self.head)
+		if (self.count > 0)
 		{
 			self.stale_simple_keys()!;
 			bool head_may_be_key = false;
-			foreach (k : self.keys) head_may_be_key |= k.possible && k.token_number == self.tokens_taken;
+			for (int i = 0; i < self.keys_len; i++)
+			{
+				SimpleKey* k = &self.keys[i];
+				if (k.possible() && k.token_number == self.tokens_taken)
+				{
+					head_may_be_key = true;
+					break;
+				}
+			}
 			if (!head_may_be_key) return;
 		}
 		if (self.stream_end_done) return;
@@ -244,15 +317,14 @@ fn void? Scanner.fetch_more_tokens(&self)
 	}
 }
 
-fn void Scanner.push(&self, TokenType type, Mark m, String value = "", ScalarStyle style = PLAIN, String handle = "")
-{
-	self.tokens.push({ .type = type, .start = m, .value = value, .style = style, .handle = handle });
-}
-
 fn void? Scanner.fetch_next_token(&self)
 {
 	if (!self.stream_start_done)
 	{
+		if (self.s.len > MAX_INPUT)
+		{
+			return self.error(self.mark, "input size limit exceeded", LIMIT_EXCEEDED)~;
+		}
 		if (self.invalid_at < self.s.len)
 		{
 			while (self.mark.pos < self.invalid_at) self.advance();
@@ -262,18 +334,16 @@ fn void? Scanner.fetch_next_token(&self)
 		self.stream_start_done = true;
 		self.simple_key_allowed = true;
 		self.compact_ok = true;
-		self.push(T_STREAM_START, self.mark);
+		self.push(T_STREAM_START, self.mark)!;
 		return;
 	}
-	int prev_line = self.mark.line;   // where the previous token ended
-	self.scan_to_next_token();
+	int prev_line = self.mark.line;
+	self.scan_to_next_token()!;
 	self.stale_simple_keys()!;
-	// after a JSON-like node, ':' may follow directly (in a flow mapping also on a later line)
-	bool json_key = self.json_node && (self.mark.line == prev_line || self.simple_key().flow_map);
+	bool json_key = self.json_node && (self.mark.line == prev_line || self.simple_key().flow_map());
 	self.json_node = false;
 	if (self.flow_level)
 	{
-		// every line inside a flow collection is indented more than the enclosing block
 		if (self.mark.line != prev_line && !self.at_end() && self.line_indent() <= self.indent)
 		{
 			return self.error(self.mark, "flow collection line is not indented enough", INVALID_INDENTATION)~;
@@ -281,13 +351,13 @@ fn void? Scanner.fetch_next_token(&self)
 	}
 	else
 	{
-		self.unroll_indent(self.col());
+		self.unroll_indent(self.col())!;
 	}
 	if (self.at_end()) return self.fetch_stream_end();
 	char c = self.peek();
 	char next = self.peek(1);
 	bool flow = self.flow_level > 0;
-	bool ends_indicator = is_blankz(next) || (flow && is_flow_indicator(next));   // "- ", "? ", ": " (flow: "-,")
+	bool ends_indicator = is_blankz(next) || (flow && is_flow_indicator(next));
 	if (c == '[' || c == '{') return self.fetch_flow_start(c == '[' ? T_FLOW_SEQUENCE_START : T_FLOW_MAPPING_START);
 	if (c == ']' || c == '}') return self.fetch_flow_end(c == ']' ? T_FLOW_SEQUENCE_END : T_FLOW_MAPPING_END);
 	if (c == ',') return self.fetch_flow_entry();
@@ -313,12 +383,9 @@ fn void? Scanner.fetch_next_token(&self)
 	return self.fetch_plain();
 }
 
-// Skip blanks, comments and line breaks. Sets simple_key_allowed / compact_ok at a new line.
-const String BOM = "\xef\xbb\xbf";   // U+FEFF, the UTF-8 byte order mark
+fn bool Scanner.bom_at(&self, sz i) @inline => ((String)self.s[i..]).starts_with(BOM);
 
-fn bool Scanner.bom_at(&self, sz i) @inline => self.s[i..].starts_with(BOM);
-
-fn void Scanner.scan_to_next_token(&self)
+fn void? Scanner.scan_to_next_token(&self)
 {
 	while (!self.at_end())
 	{
@@ -329,11 +396,11 @@ fn void Scanner.scan_to_next_token(&self)
 		}
 		else if (c == '\t')
 		{
-			if (self.compact_ok) self.tab_indent = true;   // TAB before the first token
+			if (self.compact_ok) self.tab_indent = true;
 			self.compact_ok = false;
 			self.advance();
 		}
-		else if (c == '#' && (self.mark.pos == 0 || is_blankz(self.s[self.mark.pos - 1])))
+		else if (c == '#' && (self.mark.pos == 0 || self.prev_blank))
 		{
 			self.skip_line();
 		}
@@ -346,35 +413,35 @@ fn void Scanner.scan_to_next_token(&self)
 		}
 		else if (self.mark.column == 1 && !self.flow_level && self.bom_at(self.mark.pos))
 		{
-			// a BOM may start each document (YAML 1.2.2 5.2); it takes no column
 			for (int i = 0; i < BOM.len; i++) self.advance();
 			self.mark.column = 1;
 		}
 		else
 		{
-			return;
+			break;
 		}
 	}
+	if (!self.at_end() && self.mark.column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 }
 
 // ---- indentation ---------------------------------------------------------
 
-// Open a block collection at `column` if it is deeper than the current indent; the caller
-// adds its start token if this returns true.
-fn bool Scanner.roll_indent(&self, int column)
+fn bool? Scanner.roll_indent(&self, int column)
 {
 	if (self.indent >= column) return false;
-	self.indents.push(self.indent);
+	if (column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
+	if (self.indents_len >= MAX_DEPTH) return self.error(self.mark, "indentation depth limit exceeded", LIMIT_EXCEEDED)~;
+	self.indents[self.indents_len++] = self.indent;
 	self.indent = column;
 	return true;
 }
 
-fn void Scanner.unroll_indent(&self, int column)
+fn void? Scanner.unroll_indent(&self, int column)
 {
 	while (self.indent > column)
 	{
-		self.push(T_BLOCK_END, self.mark);
-		self.indent = self.indents.pop()!!;
+		self.push(T_BLOCK_END, self.mark)!;
+		self.indent = self.indents[--self.indents_len];
 	}
 }
 
@@ -383,35 +450,41 @@ fn void Scanner.unroll_indent(&self, int column)
 fn void? Scanner.save_simple_key(&self)
 {
 	if (!self.simple_key_allowed) return;
+	if (self.mark.column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 	self.remove_simple_key()!;
 	SimpleKey* k = self.simple_key();
+	char flags = KEY_POSSIBLE;
+	if (k.flow_map()) flags |= KEY_FLOW_MAP;
+	if (!self.flow_level && self.indent == self.col()) flags |= KEY_REQUIRED;
+	if (self.compact_ok) flags |= KEY_COMPACT_OK;
+	if (self.tab_indent) flags |= KEY_TAB_INDENT;
 	*k = {
-		.possible = true,
-		.flow_map = k.flow_map,
-		.required = !self.flow_level && self.indent == self.col(),
-		.compact_ok = self.compact_ok,
-		.tab_indent = self.tab_indent,
-		.token_number = self.tokens_taken + self.tokens.len() - self.head,
-		.mark = self.mark,
+		.token_number = self.tokens_taken + (sz)self.count,
+		.pos = (uint)self.mark.pos,
+		.line = (uint)self.mark.line,
+		.col = (ushort)self.mark.column,
+		.flags = flags,
 	};
 }
 
 fn void? Scanner.remove_simple_key(&self) => self.drop_key(self.simple_key());
 
-// A key that can no longer get its ':'; losing a required one is an error.
 fn void? Scanner.drop_key(&self, SimpleKey* k)
 {
-	if (k.possible && k.required) return self.error(k.mark, "could not find expected ':'", MISSING_COLON)~;
-	k.possible = false;
+	if (k.possible() && k.required()) return self.error(k.mark(), "could not find expected ':'", MISSING_COLON)~;
+	k.flags &= (char)~KEY_POSSIBLE;
 }
 
-// Implicit keys are single-line and at most 1024 characters; keys in a flow mapping have no limit.
 fn void? Scanner.stale_simple_keys(&self)
 {
-	foreach (&k : self.keys)
+	for (int i = 0; i < self.keys_len; i++)
 	{
-		if (!k.possible || k.flow_map) continue;
-		if (k.mark.line == self.mark.line && self.mark.pos - k.mark.pos <= 1024) continue;
+		SimpleKey* k = &self.keys[i];
+		if (!k.possible()) continue;
+		sz dist = self.tokens_taken + (sz)self.count - k.token_number;
+		if (dist > QUEUE_SIZE - 8) return self.error(k.mark(), "implicit key too long", LIMIT_EXCEEDED)~;
+		if (k.flow_map()) continue;
+		if ((int)k.line == self.mark.line && self.mark.pos - (sz)k.pos <= 1024) continue;
 		self.drop_key(k)!;
 	}
 }
@@ -421,15 +494,13 @@ fn void? Scanner.stale_simple_keys(&self)
 fn void? Scanner.fetch_stream_end(&self)
 {
 	if (self.flow_level) return self.error(self.mark, "unclosed flow collection: missing ']' or '}'", UNCLOSED_FLOW)~;
-	self.unroll_indent(-1);
+	self.unroll_indent(-1)!;
 	self.remove_simple_key()!;
 	self.simple_key_allowed = false;
 	self.stream_end_done = true;
-	self.push(T_STREAM_END, self.mark);
+	self.push(T_STREAM_END, self.mark)!;
 }
 
-// '-' (block entry, block context only) or '?' (explicit key). In block context the indicator
-// may open a new block collection at its column, but only where compact_ok allows it.
 fn void? Scanner.fetch_indicator(&self, TokenType token, TokenType collection, String not_here)
 {
 	if (!self.flow_level)
@@ -438,81 +509,82 @@ fn void? Scanner.fetch_indicator(&self, TokenType token, TokenType collection, S
 		if (self.indent < self.col())
 		{
 			if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, not_here)~;
-			if (self.roll_indent(self.col())) self.push(collection, self.mark);
+			if (self.roll_indent(self.col())!) self.push(collection, self.mark)!;
 		}
 	}
 	self.remove_simple_key()!;
 	Mark m = self.mark;
 	self.advance();
 	self.simple_key_allowed = !self.flow_level;
-	self.compact_ok = self.peek() == ' ';   // "-\t-" may not nest
-	self.push(token, m);
+	self.compact_ok = self.peek() == ' ';
+	self.push(token, m)!;
 }
 
 fn void? Scanner.fetch_value(&self)
 {
 	SimpleKey* k = self.simple_key();
-	if (k.possible)
+	if (k.possible())
 	{
 		if (!self.flow_level)
 		{
-			if (k.tab_indent) return self.error(k.mark, "tab character in indentation", INVALID_TAB)~;
-			if (self.indent < k.mark.column - 1 && !k.compact_ok)
+			if (k.tab_indent()) return self.error(k.mark(), "tab character in indentation", INVALID_TAB)~;
+			if (self.indent < (int)k.col - 1 && !k.compact_ok())
 			{
-				return self.error(k.mark, "mapping values are not allowed here")~;
+				return self.error(k.mark(), "mapping values are not allowed here")~;
 			}
 		}
-		Token* key = self.tokens.get_ref(self.queue_index(k.token_number));
-		key.implied_key = true;
-		if (!self.flow_level) key.implied_mapping_start = self.roll_indent(k.mark.column - 1);
-		k.possible = false;
+		Token* key = &self.tokens[self.ring_index(k.token_number)];
+		key.flags |= FLAG_IMPLIED_KEY;
+		if (!self.flow_level)
+		{
+			if (self.roll_indent((int)k.col - 1)!) key.flags |= FLAG_IMPLIED_MAP;
+		}
+		k.flags &= (char)~KEY_POSSIBLE;
 		self.simple_key_allowed = false;
-		self.compact_ok = false;   // "a: - b", "a: b: c"
+		self.compact_ok = false;
 	}
 	else if (!self.flow_level)
 	{
-		// value of an explicit '?' key, or an empty key
 		if (!self.simple_key_allowed) return self.error(self.mark, "mapping values are not allowed here")~;
-		if (self.roll_indent(self.col())) self.push(T_BLOCK_MAPPING_START, self.mark);
+		if (self.roll_indent(self.col())!) self.push(T_BLOCK_MAPPING_START, self.mark)!;
 		self.simple_key_allowed = true;
 		self.compact_ok = self.peek(1) == ' ';
 	}
 	else
 	{
-		self.simple_key_allowed = false;   // "{? a : b}", "{: b}"
+		self.simple_key_allowed = false;
 	}
 	Mark m = self.mark;
 	self.advance();
-	self.push(T_VALUE, m);
+	self.push(T_VALUE, m)!;
 }
 
-// '[' or '{': the collection may itself be an implicit key ("[a]: b").
 fn void? Scanner.fetch_flow_start(&self, TokenType type)
 {
-	// also bounds the per-token work over `keys`, which grows with the flow level
 	if (self.flow_level >= MAX_DEPTH) return self.error(self.mark, "flow nesting depth limit exceeded", LIMIT_EXCEEDED)~;
 	self.save_simple_key()!;
-	self.keys.push({ .flow_map = type == T_FLOW_MAPPING_START });
+	char flags = (type == T_FLOW_MAPPING_START) ? KEY_FLOW_MAP : 0;
+	self.keys[self.keys_len++] = { .flags = flags };
 	self.flow_level++;
 	Mark m = self.mark;
 	self.advance();
 	self.simple_key_allowed = true;
 	self.compact_ok = false;
-	self.push(type, m);
+	self.push(type, m)!;
 }
 
 fn void? Scanner.fetch_flow_end(&self, TokenType type)
 {
 	if (!self.flow_level) return self.error(self.mark, "closing bracket without an opening one")~;
-	if (self.simple_key().flow_map != (type == T_FLOW_MAPPING_END)) return self.error(self.mark, "closing bracket does not match the opening one")~;
+	if (self.simple_key().flow_map() != (type == T_FLOW_MAPPING_END)) return self.error(self.mark, "closing bracket does not match the opening one")~;
 	self.remove_simple_key()!;
-	self.keys.pop()!!;
+	self.keys_len--;
 	self.flow_level--;
 	Mark m = self.mark;
 	self.advance();
 	self.simple_key_allowed = false;
 	self.json_node = true;
-	self.push(type, m);
+	self.push(type, m)!;
 }
 
 fn void? Scanner.fetch_flow_entry(&self)
@@ -522,22 +594,22 @@ fn void? Scanner.fetch_flow_entry(&self)
 	Mark m = self.mark;
 	self.advance();
 	self.simple_key_allowed = true;
-	self.push(T_FLOW_ENTRY, m);
+	self.push(T_FLOW_ENTRY, m)!;
 }
 
-const String INDICATORS = "%@`";   // '%' outside column 1, reserved '@' and '`'
+const String INDICATORS = "%@`";
 
 fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 {
 	if (self.flow_level) return self.error(self.mark, "document marker inside a flow collection")~;
-	self.unroll_indent(-1);
+	self.unroll_indent(-1)!;
 	self.remove_simple_key()!;
 	self.simple_key_allowed = false;
-	self.compact_ok = false;   // "--- a: b" (9KBC) and "--- - a" may not open a block collection
+	self.compact_ok = false;
 	Mark m = self.mark;
 	for (int i = 0; i < 3; i++) self.advance();
-	if (type == T_DOCUMENT_END) self.end_of_line()!;   // "... text" (3HFZ)
-	self.push(type, m);
+	if (type == T_DOCUMENT_END) self.end_of_line()!;
+	self.push(type, m)!;
 }
 
 fn void Scanner.skip_line(&self)
@@ -545,7 +617,6 @@ fn void Scanner.skip_line(&self)
 	while (!self.at_end() && self.peek() != '\n') self.advance();
 }
 
-// Only blanks and a comment ('#' after a blank) may follow on this line.
 fn void? Scanner.end_of_line(&self, String msg = "unexpected text at the end of the line", fault f = SYNTAX_ERROR)
 {
 	sz blanks = self.mark.pos;
@@ -554,11 +625,8 @@ fn void? Scanner.end_of_line(&self, String msg = "unexpected text at the end of 
 	if (!self.at_end() && self.peek() != '\n') return self.error(self.mark, msg, f)~;
 }
 
-// '---' or '...' at column 1 followed by a blank or EOF
 fn bool Scanner.at_marker(&self) => self.mark.column == 1 && self.is_marker(self.mark.pos);
 
-// '---' or '...' starting at byte `i` (which must be at a line start, maybe after a BOM)
-// followed by a blank or EOF
 fn bool Scanner.is_marker(&self, sz i)
 {
 	if (self.bom_at(i)) i += BOM.len;
@@ -568,56 +636,96 @@ fn bool Scanner.is_marker(&self, sz i)
 		&& (i + 3 == self.s.len || is_blankz(self.s[i + 3]));
 }
 
-// Plain scalar (DESIGN.md "Plain scalars"). Ends at ': ', ':'EOL, ' #', a line break followed by
-// a line at column <= indent, a comment line, a document marker, or EOF. The line breaks that end
-// it are not consumed (scan_to_next_token does that).
+// Plain scalar: single line is identity span (no write, no blanking).
+// Multiline folds in place into [orig_start, w) and blanks [w, orig_end).
 fn void? Scanner.fetch_plain(&self)
 {
 	self.save_simple_key()!;
 	Mark m = self.mark;
 	int line = m.line;
-	String value = self.scan_plain();
-	self.simple_key_allowed = self.mark.line != line;   // crossed a line break
+	Span value = self.scan_plain()!;
+	self.simple_key_allowed = self.mark.line != line;
 	self.compact_ok = false;
-	self.push(T_SCALAR, m, value);
+	self.push(T_SCALAR, m, value)!;
 }
 
-fn String Scanner.scan_plain(&self)
+fn Span? Scanner.scan_plain(&self)
 {
-	String first;     // the first line: a slice of the input, no copy
-	DString buf;      // created only when the scalar continues on another line
 	bool flow = self.flow_level > 0;
-	int breaks = 0;   // line breaks between the previous text and this line
+	sz start = self.mark.pos;
+	sz end = start;
+
+	// Line 1
+	while (!self.at_end())
+	{
+		char c = self.peek();
+		if (c == '\n' || (c == ':' && (is_blankz(self.peek(1)) || (flow && is_flow_indicator(self.peek(1)))))) break;
+		if (flow && is_flow_indicator(c)) break;
+		if (c == '#' && self.mark.pos > start && self.prev_blank) break;
+		self.advance();
+		if (!c.is_blank()) end = self.mark.pos;
+	}
+
+	if (self.peek() != '\n')
+	{
+		// Single line: identity span, NO write, NO blanking
+		return (Span){ (uint)start, (uint)(end - start) };
+	}
+
+	// Look ahead to check if scalar continues on next line
+	sz text = self.mark.pos;
+	sz line_start = 0;
+	int text_breaks = 0;
+	while (text < self.s.len && (self.s[text] == '\n' || self.s[text].is_blank()))
+	{
+		if (self.s[text] == '\n')
+		{
+			text_breaks++;
+			line_start = text + 1;
+		}
+		text++;
+	}
+	if (text >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[text] == '#' || self.is_marker(line_start) || (flow && is_flow_indicator(self.s[text])))
+	{
+		return (Span){ (uint)start, (uint)(end - start) };
+	}
+
+	// Multiline: begins in-place writing
+	InPlaceWriter writer;
+	writer.init(self.s, (uint)start, self.arena, self.spill);
+	writer.w = (uint)end;
+
+	while (self.mark.pos < text) self.advance();
+	int breaks = text_breaks;
+
 	while (true)
 	{
-		// the text of one line, without trailing blanks
-		sz start = self.mark.pos;
-		sz end = start;
+		sz l_start = self.mark.pos;
+		sz l_end = l_start;
 		while (!self.at_end())
 		{
 			char c = self.peek();
 			if (c == '\n' || (c == ':' && (is_blankz(self.peek(1)) || (flow && is_flow_indicator(self.peek(1)))))) break;
 			if (flow && is_flow_indicator(c)) break;
-			if (c == '#' && self.mark.pos > start && self.s[self.mark.pos - 1].is_blank()) break;
+			if (c == '#' && self.mark.pos > l_start && self.prev_blank) break;
 			self.advance();
-			if (!c.is_blank()) end = self.mark.pos;
+			if (!c.is_blank()) l_end = self.mark.pos;
 		}
-		if (end > start && !breaks)
+		if (l_end > l_start)
 		{
-			first = self.s[start:end - start];
+			if (breaks == 1) writer.append_char(' ', (uint)self.mark.pos)!;
+			for (int i = 1; i < breaks; i++) writer.append_char('\n', (uint)self.mark.pos)!;
+			writer.append_slice(self.s[l_start:l_end - l_start], (uint)self.mark.pos)!;
 		}
-		else if (end > start)
+		if (self.peek() != '\n')
 		{
-			if (!buf) buf = dstring::temp(first);
-			if (breaks == 1) buf.append_char(' ');
-			for (int i = 1; i < breaks; i++) buf.append_char('\n');
-			buf.append(self.s[start:end - start]);
+			return writer.finish((uint)self.mark.pos);
 		}
-		if (self.peek() != '\n') return buf ? buf.str_view() : first;
-		// look ahead over line breaks and blank lines to the next text
-		sz text = self.mark.pos;
-		sz line_start;
-		int text_breaks = 0;
+
+		// Look ahead again
+		text = self.mark.pos;
+		line_start = 0;
+		text_breaks = 0;
 		while (text < self.s.len && (self.s[text] == '\n' || self.s[text].is_blank()))
 		{
 			if (self.s[text] == '\n')
@@ -627,20 +735,19 @@ fn String Scanner.scan_plain(&self)
 			}
 			text++;
 		}
-		if (text >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[text] == '#' || self.is_marker(line_start))
+		if (text >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[text] == '#' || self.is_marker(line_start) || (flow && is_flow_indicator(self.s[text])))
 		{
-			return buf ? buf.str_view() : first;
+			return writer.finish((uint)self.mark.pos);
 		}
 		while (self.mark.pos < text) self.advance();
 		breaks = text_breaks;
 	}
 }
 
-// Indentation counts spaces only, never TABs.
 fn int Scanner.spaces_at(&self, sz i)
 {
 	int n = 0;
-	while (i + n < self.s.len && self.s[i + n] == ' ') n++;
+	while (i + (sz)n < self.s.len && self.s[i + (sz)n] == ' ') n++;
 	return n;
 }
 
@@ -652,31 +759,35 @@ fn void? Scanner.fetch_flow_scalar(&self, bool single)
 {
 	self.save_simple_key()!;
 	Mark m = self.mark;
-	String value = self.scan_flow_scalar(single)!;
+	Span value = self.scan_flow_scalar(single)!;
 	self.simple_key_allowed = false;
 	self.compact_ok = false;
 	self.json_node = true;
-	// only blanks, then ':', a comment or the end of the line may follow (in flow also ", ] }")
+
 	sz i = self.mark.pos;
 	while (i < self.s.len && self.s[i].is_blank()) i++;
 	char c = i < self.s.len ? self.s[i] : '\n';
 	bool ok = c == '\n' || c == '#' || (c == ':' && (i + 1 == self.s.len || is_blankz(self.s[i + 1])));
 	if (self.flow_level) ok |= c == ':' || c == ',' || c == ']' || c == '}';
 	if (!ok) return self.error(self.mark, "unexpected text after a quoted scalar")~;
-	self.push(T_SCALAR, m, value, single ? SINGLE : DOUBLE);
+	self.push(T_SCALAR, m, value, single ? SINGLE : DOUBLE)!;
 }
 
-fn String? Scanner.scan_flow_scalar(&self, bool single)
+fn Span? Scanner.scan_flow_scalar(&self, bool single)
 {
 	Mark start = self.mark;
+	uint orig_start = (uint)self.mark.pos;
 	char quote = self.peek();
 	self.advance();
-	DString buf = dstring::temp();
+
+	InPlaceWriter writer;
+	writer.init(self.s, orig_start, self.arena, self.spill);
+
 	while (true)
 	{
 		if (self.at_marker()) return self.error(self.mark, "document marker inside a quoted scalar")~;
 		if (self.at_end()) return self.error(start, "unclosed quoted scalar", UNCLOSED_QUOTE)~;
-		// non-blank characters
+
 		bool escaped_break = false;
 		while (!self.at_end())
 		{
@@ -684,15 +795,15 @@ fn String? Scanner.scan_flow_scalar(&self, bool single)
 			if (c.is_blank() || c == '\n') break;
 			if (single && c == '\'' && self.peek(1) == '\'')
 			{
-				buf.append_char('\'');
 				self.advance();
 				self.advance();
+				writer.append_char('\'', (uint)self.mark.pos)!;
 				continue;
 			}
 			if (c == quote)
 			{
 				self.advance();
-				return buf.str_view();
+				return writer.finish((uint)self.mark.pos);
 			}
 			if (!single && c == '\\')
 			{
@@ -702,13 +813,13 @@ fn String? Scanner.scan_flow_scalar(&self, bool single)
 					escaped_break = true;
 					break;
 				}
-				self.scan_escape(&buf)!;
+				self.scan_escape(&writer)!;
 				continue;
 			}
-			buf.append_char(c);
 			self.advance();
+			writer.append_char(c, (uint)self.mark.pos)!;
 		}
-		// blanks and line breaks: blanks inside a line are kept, around a break they are dropped
+
 		sz blanks = self.mark.pos;
 		int breaks = 0;
 		while (true)
@@ -726,53 +837,65 @@ fn String? Scanner.scan_flow_scalar(&self, bool single)
 		}
 		if (breaks == 0)
 		{
-			buf.append(self.s[blanks:self.mark.pos - blanks]);
+			if (self.mark.pos > blanks)
+			{
+				writer.append_slice(self.s[blanks:self.mark.pos - blanks], (uint)self.mark.pos)!;
+			}
 			continue;
 		}
 		if (!self.at_end() && self.line_indent() <= self.indent)
 		{
 			return self.error(self.mark, "continuation line of a quoted scalar is not indented enough", INVALID_INDENTATION)~;
 		}
-		// one break folds to a space, n breaks give n-1 line feeds; an escaped break gives no space
-		if (breaks == 1 && !escaped_break) buf.append_char(' ');
-		for (int i = 2; i <= breaks; i++) buf.append_char('\n');
+		if (breaks == 1 && !escaped_break) writer.append_char(' ', (uint)self.mark.pos)!;
+		for (int i = 2; i <= breaks; i++) writer.append_char('\n', (uint)self.mark.pos)!;
 	}
 }
 
-// One escape sequence of a double-quoted scalar, at the backslash.
-fn void? Scanner.scan_escape(&self, DString* buf)
+fn void? Scanner.scan_escape(&self, InPlaceWriter* writer)
 {
 	Mark m = self.mark;
 	self.advance();
 	char c = self.peek();
 	self.advance();
-	int digits;
+	int digits = 0;
 	switch (c)
 	{
-		case '0': buf.append_char('\0');
-		case 'a': buf.append_char(0x07);
-		case 'b': buf.append_char(0x08);
+		case '0': writer.append_char('\0', (uint)self.mark.pos)!; return;
+		case 'a': writer.append_char(0x07, (uint)self.mark.pos)!; return;
+		case 'b': writer.append_char(0x08, (uint)self.mark.pos)!; return;
 		case 't':
-		case '\t': buf.append_char('\t');
-		case 'n': buf.append_char('\n');
-		case 'v': buf.append_char(0x0b);
-		case 'f': buf.append_char(0x0c);
-		case 'r': buf.append_char('\r');
-		case 'e': buf.append_char(0x1b);
+		case '\t': writer.append_char('\t', (uint)self.mark.pos)!; return;
+		case 'n': writer.append_char('\n', (uint)self.mark.pos)!; return;
+		case 'v': writer.append_char(0x0b, (uint)self.mark.pos)!; return;
+		case 'f': writer.append_char(0x0c, (uint)self.mark.pos)!; return;
+		case 'r': writer.append_char('\r', (uint)self.mark.pos)!; return;
+		case 'e': writer.append_char(0x1b, (uint)self.mark.pos)!; return;
 		case ' ':
 		case '"':
 		case '/':
-		case '\\': buf.append_char(c);
-		case 'N': buf.append_char32(0x85);
-		case '_': buf.append_char32(0xa0);
-		case 'L': buf.append_char32(0x2028);
-		case 'P': buf.append_char32(0x2029);
+		case '\\': writer.append_char(c, (uint)self.mark.pos)!; return;
+		case 'N': writer.append_char32(0x85, (uint)self.mark.pos)!; return;
+		case '_': writer.append_char32(0xa0, (uint)self.mark.pos)!; return;
+		case 'L':
+			if (catch err = writer.append_char32(0x2028, (uint)self.mark.pos))
+			{
+				if (err == NO_SPACE) return self.error(m, "scalar does not fit in place (\\L/\\P); give the parser a spill allocator", NO_SPACE)~;
+				return err~;
+			}
+			return;
+		case 'P':
+			if (catch err = writer.append_char32(0x2029, (uint)self.mark.pos))
+			{
+				if (err == NO_SPACE) return self.error(m, "scalar does not fit in place (\\L/\\P); give the parser a spill allocator", NO_SPACE)~;
+				return err~;
+			}
+			return;
 		case 'x': digits = 2;
 		case 'u': digits = 4;
 		case 'U': digits = 8;
 		default: return self.error(m, "invalid escape sequence", INVALID_ESCAPE)~;
 	}
-	if (!digits) return;
 	uint code = 0;
 	for (int i = 0; i < digits; i++)
 	{
@@ -782,7 +905,7 @@ fn void? Scanner.scan_escape(&self, DString* buf)
 		self.advance();
 	}
 	if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return self.error(m, "invalid Unicode code point", INVALID_ESCAPE)~;
-	buf.append_char32(code);
+	writer.append_char32((Char32)code, (uint)self.mark.pos)!;
 }
 
 // ---- block scalars -------------------------------------------------------
@@ -791,20 +914,20 @@ fn void? Scanner.fetch_block_scalar(&self, bool literal)
 {
 	self.remove_simple_key()!;
 	Mark m = self.mark;
-	String value = self.scan_block_scalar(literal)!;
-	// the scanner is now at the start of the line that ended the scalar
+	Span value = self.scan_block_scalar(literal)!;
 	self.simple_key_allowed = true;
 	self.compact_ok = true;
 	self.tab_indent = false;
-	self.push(T_SCALAR, m, value, literal ? LITERAL : FOLDED);
+	self.push(T_SCALAR, m, value, literal ? LITERAL : FOLDED)!;
 }
 
-enum Chomp : char { CLIP, STRIP, KEEP }   // block scalar header: none, '-', '+'
+enum Chomp : char { CLIP, STRIP, KEEP }
 
-fn String? Scanner.scan_block_scalar(&self, bool literal)
+fn Span? Scanner.scan_block_scalar(&self, bool literal)
 {
+	uint orig_start = (uint)self.mark.pos;
 	self.advance();
-	// header: chomping indicator and indentation indicator 1-9, in either order
+
 	Chomp chomp = CLIP;
 	int increment = 0;
 	while (true)
@@ -831,8 +954,7 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 	self.end_of_line("invalid block scalar header", INVALID_BLOCK_HEADER)!;
 	self.advance();
 
-	// content indentation: given by the indicator, or detected from the first non-empty line
-	int min_indent = self.indent + 1;   // indent >= -1
+	int min_indent = self.indent + 1;
 	int indent = increment ? (self.indent > 0 ? self.indent : 0) + increment : -1;
 	int max_empty = 0;
 	int breaks = self.block_breaks(indent, min_indent, &max_empty)!;
@@ -845,41 +967,41 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 		}
 	}
 
-	DString buf = dstring::temp();
-	bool line_break = false;    // a break follows the previous content line
-	bool more_indented = false; // the previous content line started with a blank
+	InPlaceWriter writer;
+	writer.init(self.s, orig_start, self.arena, self.spill);
+
+	bool line_break = false;
+	bool more_indented = false;
 	while (self.col() == indent && !self.at_end() && !self.at_marker())
 	{
 		bool blank = self.peek().is_blank();
-		// folded: a single break between two normal lines becomes a space
 		if (!literal && line_break && !more_indented && !blank)
 		{
-			if (!breaks) buf.append_char(' ');
+			if (!breaks) writer.append_char(' ', (uint)self.mark.pos)!;
 		}
 		else if (line_break)
 		{
-			buf.append_char('\n');
+			writer.append_char('\n', (uint)self.mark.pos)!;
 		}
-		for (int i = 0; i < breaks; i++) buf.append_char('\n');
+		for (int i = 0; i < breaks; i++) writer.append_char('\n', (uint)self.mark.pos)!;
 		more_indented = blank;
 		sz from = self.mark.pos;
 		self.skip_line();
-		buf.append(self.s[from:self.mark.pos - from]);
-		line_break = true;   // the end of the input ends the last line like a line break
+		if (self.mark.pos > from)
+		{
+			writer.append_slice(self.s[from:self.mark.pos - from], (uint)self.mark.pos)!;
+		}
+		line_break = true;
 		breaks = 0;
 		if (self.at_end()) break;
 		self.advance();
 		breaks = self.block_breaks(indent, min_indent, &max_empty)!;
 	}
-	// chomping of the final line break and the trailing empty lines
-	if (chomp != STRIP && line_break) buf.append_char('\n');
-	if (chomp == KEEP) for (int i = 0; i < breaks; i++) buf.append_char('\n');
-	return buf.str_view();
+	if (chomp != STRIP && line_break) writer.append_char('\n', (uint)self.mark.pos)!;
+	if (chomp == KEEP) for (int i = 0; i < breaks; i++) writer.append_char('\n', (uint)self.mark.pos)!;
+	return writer.finish((uint)self.mark.pos);
 }
 
-// Skip the indentation and the empty lines before a block scalar line; return the number of
-// empty lines. `indent` < 0: not known yet (only spaces are skipped, `max_empty` records the
-// widest empty line). A TAB inside the indentation is an error.
 fn int? Scanner.block_breaks(&self, int indent, int min_indent, int* max_empty)
 {
 	int breaks = 0;
@@ -891,7 +1013,7 @@ fn int? Scanner.block_breaks(&self, int indent, int min_indent, int* max_empty)
 		{
 			return self.error(self.mark, "tab character where indentation is expected", INVALID_TAB)~;
 		}
-		if (self.at_end() && self.mark.pos > line) return breaks + 1;   // a blank last line
+		if (self.at_end() && self.mark.pos > line) return breaks + 1;
 		if (self.peek() != '\n') return breaks;
 		if (indent < 0 && self.col() > *max_empty) *max_empty = self.col();
 		self.advance();
@@ -906,32 +1028,32 @@ fn void Scanner.skip_blanks(&self)
 	while (self.peek().is_blank()) self.advance();
 }
 
-// Characters up to a blank or a flow indicator (anchor names, directive arguments).
-fn String Scanner.scan_word(&self)
+fn Span Scanner.scan_word(&self)
 {
 	sz from = self.mark.pos;
 	while (!is_blankz(self.peek()) && !is_flow_indicator(self.peek())) self.advance();
-	return self.s[from:self.mark.pos - from];
+	return { (uint)from, (uint)(self.mark.pos - from) };
 }
 
-// '&name' or '*name'.
 fn void? Scanner.fetch_anchor(&self, bool is_alias)
 {
 	self.save_simple_key()!;
 	self.simple_key_allowed = false;
 	Mark m = self.mark;
 	self.advance();
-	String name = self.scan_word();
+	Span name = self.scan_word();
 	if (!name.len) return self.error(m, is_alias ? "alias without a name" : "anchor without a name")~;
-	self.push(is_alias ? T_ALIAS : T_ANCHOR, m, name);
+	self.push(is_alias ? T_ALIAS : T_ANCHOR, m, name)!;
 }
 
 fn bool is_word_char(char c) => c.is_alnum() || c == '-';
 
-// URI characters allowed in a tag suffix (no '!' and no flow indicators); '%XX' is decoded.
-fn String? Scanner.scan_tag_uri(&self, bool verbatim)
+fn Span? Scanner.scan_tag_uri(&self, bool verbatim)
 {
-	DString buf = dstring::temp();
+	uint orig_start = (uint)self.mark.pos;
+	InPlaceWriter writer;
+	writer.init(self.s, orig_start, self.arena, self.spill);
+
 	while (true)
 	{
 		char c = self.peek();
@@ -940,25 +1062,24 @@ fn String? Scanner.scan_tag_uri(&self, bool verbatim)
 			char hi = self.peek(1);
 			char lo = self.peek(2);
 			if (!hi.is_xdigit() || !lo.is_xdigit()) return self.error(self.mark, "invalid '%' escape in a tag", INVALID_ESCAPE)~;
-			buf.append_char(hi.from_hex() * 16 + lo.from_hex());
 			for (int i = 0; i < 3; i++) self.advance();
+			writer.append_char((char)(hi.from_hex() * 16 + lo.from_hex()), (uint)self.mark.pos)!;
 			continue;
 		}
 		if (!c.is_alnum() && !"-#;/?:@&=+$_.~*'()".contains_char(c) && !(verbatim && "!,[]".contains_char(c))) break;
-		buf.append_char(c);
 		self.advance();
+		writer.append_char(c, (uint)self.mark.pos)!;
 	}
-	return buf.str_view();
+	return writer.finish((uint)self.mark.pos);
 }
 
-// '!<uri>', '!', '!suffix', '!!suffix', '!handle!suffix'. Resolved by the parser.
 fn void? Scanner.fetch_tag(&self)
 {
 	self.save_simple_key()!;
 	self.simple_key_allowed = false;
 	Mark m = self.mark;
-	String handle;
-	String suffix;
+	Span handle = {};
+	Span suffix = {};
 	if (self.peek(1) == '<')
 	{
 		self.advance();
@@ -973,12 +1094,13 @@ fn void? Scanner.fetch_tag(&self)
 		while (is_word_char(self.peek(n))) n++;
 		if (self.peek(n) == '!')
 		{
-			handle = self.s[self.mark.pos:n + 1];   // "!!" or "!name!"
+			if (n + 1 > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
+			handle = { (uint)self.mark.pos, (uint)(n + 1) };
 			for (sz i = 0; i <= n; i++) self.advance();
 		}
 		else
 		{
-			handle = "!";
+			handle = { (uint)self.mark.pos, 1 };
 			self.advance();
 		}
 		suffix = self.scan_tag_uri(false)!;
@@ -986,18 +1108,18 @@ fn void? Scanner.fetch_tag(&self)
 	}
 	char c = self.peek();
 	if (!is_blankz(c) && !(self.flow_level && is_flow_indicator(c))) return self.error(self.mark, "a tag must be followed by a blank")~;
-	self.push(T_TAG, m, suffix, handle: handle);
+	self.push(T_TAG, m, suffix, handle: handle)!;
 }
 
-// '%YAML 1.2', '%TAG !h! prefix'; other directives are ignored.
 fn void? Scanner.fetch_directive(&self)
 {
-	self.unroll_indent(-1);
+	self.unroll_indent(-1)!;
 	self.remove_simple_key()!;
 	self.simple_key_allowed = false;
 	Mark m = self.mark;
 	self.advance();
-	String name = self.scan_word();
+	Span name_span = self.scan_word();
+	String name = (String)self.s[name_span.off:name_span.len];
 	self.skip_blanks();
 	switch (name)
 	{
@@ -1008,25 +1130,27 @@ fn void? Scanner.fetch_directive(&self)
 			self.advance();
 			if (!self.peek().is_digit()) return self.error(self.mark, "invalid %YAML version", INVALID_DIRECTIVE)~;
 			while (self.peek().is_digit()) self.advance();
-			String version = self.s[from:self.mark.pos - from];
+			Span version_span = { (uint)from, (uint)(self.mark.pos - from) };
+			String version = (String)self.s[version_span.off:version_span.len];
 			if (!version.starts_with("1.")) return self.error(m, "unsupported YAML major version", INVALID_DIRECTIVE)~;
 			self.end_of_line()!;
-			self.push(T_VERSION_DIRECTIVE, m, version);
+			self.push(T_VERSION_DIRECTIVE, m, version_span)!;
 		case "TAG":
-			String handle = self.scan_word();
-			bool ok = handle == "!" || (handle.len >= 2 && handle[0] == '!' && handle[^1] == '!');
-			if (handle.len > 2) foreach (c : handle[1:handle.len - 2]) ok &= is_word_char(c);
+			Span handle = self.scan_word();
+			if (handle.len > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
+			String handle_str = (String)self.s[handle.off:handle.len];
+			bool ok = handle_str == "!" || (handle_str.len >= 2 && handle_str[0] == '!' && handle_str[^1] == '!');
+			if (handle_str.len > 2) foreach (c : handle_str[1:handle_str.len - 2]) ok &= is_word_char(c);
 			if (!ok) return self.error(m, "invalid %TAG handle", INVALID_DIRECTIVE)~;
 			self.skip_blanks();
-			// a prefix cannot start with a flow indicator (an escaped one, "%2C", is fine)
 			if (is_flow_indicator(self.peek())) return self.error(self.mark, "invalid %TAG prefix", INVALID_DIRECTIVE)~;
 			Mark pm = self.mark;
-			String prefix = self.scan_tag_uri(true)!;
+			Span prefix = self.scan_tag_uri(true)!;
 			if (!prefix.len) return self.error(pm, "invalid %TAG prefix", INVALID_DIRECTIVE)~;
 			self.end_of_line()!;
-			self.push(T_TAG_DIRECTIVE, m, prefix, handle: handle);
+			self.push(T_TAG_DIRECTIVE, m, prefix, handle: handle)!;
 		default:
-			self.skip_line();   // reserved directive: ignored, but it still needs a following '---'
-			self.push(T_RESERVED_DIRECTIVE, m, name);
+			self.skip_line();
+			self.push(T_RESERVED_DIRECTIVE, m, name_span)!;
 	}
 }

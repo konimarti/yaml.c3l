@@ -1,9 +1,9 @@
 // Helper functions for v2 parser tests.
-module yaml2::parser_test;
+module yaml::parser_test;
 
 import std::io;
-import yaml2::parser;
-import yaml2::testing;
+import yaml::parser;
+import yaml::testing;
 
 fn String? parse_events(String yaml, String sep = "\n", bool stream = true, bool docs = true)
 {

@@ -1,9 +1,9 @@
-// Ported parser tests from src/test/parser/ running on yaml2::parser::Parser.
-module yaml2::parser_test;
+// Ported parser tests from src/test/parser/ running on yaml::parser::Parser.
+module yaml::parser_test;
 
 import std::io;
-import yaml2::parser;
-import yaml2::testing;
+import yaml::parser;
+import yaml::testing;
 
 // ---- block_test ported ----
 

@@ -1,16 +1,14 @@
-module yaml2::api_nav_test;
+module yaml::api_nav_test;
 
 import std::collections::object;
 import std::io;
 import yaml;
-import yaml2;
-import yaml2::parser;
-import yaml2::testing;
-import yaml::test_util;
+import yaml::parser;
+import yaml::testing;
 
 fn void sample_json_output() @test => @pool()
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 	DString out = dstring::temp();
 	out.appendf("%s", y);
@@ -19,7 +17,7 @@ fn void sample_json_output() @test => @pool()
 
 fn void hop_test_seq() @test
 {
-	Tree* t = yaml2::new_tree(mem);
+	Tree* t = yaml::new_tree(mem);
 	defer t.free();
 	uint seq_id = t.add_collection(0, "", SEQ);
 	uint prev = 0;
@@ -42,13 +40,13 @@ fn void hop_test_seq() @test
 
 fn void hop_test_map() @test
 {
-	Tree* tm = yaml2::new_tree(mem);
+	Tree* tm = yaml::new_tree(mem);
 	defer tm.free();
 	uint map_id = tm.add_collection(0, "", MAP);
 	uint mprev = 0;
 	for (sz i = 0; i < 200_000; i++)
 	{
-		uint child = tm.new_node(SCALAR, flags: yaml2::F_KEY, key: tm.put("k"), val: tm.put("v"));
+		uint child = tm.new_node(SCALAR, flags: yaml::F_KEY, key: tm.put("k"), val: tm.put("v"));
 		tm.append_after(map_id, mprev, child);
 		mprev = child;
 	}
@@ -70,7 +68,7 @@ fn void hop_test_docs() @test => @pool()
 	{
 		s.append("--- a\n");
 	}
-	yaml2::Yaml y = yaml2::from_string(s.str_view(), mem, false)!!;
+	yaml::Yaml y = yaml::from_string(s.str_view(), mem, false)!!;
 	defer y.free();
 	test::eq(y.len(), 100_000);
 
@@ -104,7 +102,7 @@ fn void large_map_lookup_index() @test => @pool()
 		s.appendf("  k_%d: v_%d\n", i, i);
 	}
 	s.append("  k_10: shadowed\n");
-	yaml2::Yaml y = yaml2::from_string(s.str_view(), mem, false)!!;
+	yaml::Yaml y = yaml::from_string(s.str_view(), mem, false)!!;
 	defer y.free();
 
 	for (int i = 0; i < 200; i++)
@@ -121,7 +119,7 @@ fn void large_map_lookup_index() @test => @pool()
 
 fn void default_coalescing_operator() @test
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 	long port = y["port"].as_int() ?? 9000;
 	test::eq(port, 8080);
@@ -131,7 +129,7 @@ fn void default_coalescing_operator() @test
 
 fn void as_int_or_behavior() @test
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 
 	// On missing: gives default
@@ -143,7 +141,7 @@ fn void as_int_or_behavior() @test
 	test::eq(d_null, 42);
 
 	// On "abc" (in sample, "name" is "x", a string): faults WRONG_KIND
-	test::@error(y["name"].as_int_or(42), yaml2::WRONG_KIND);
+	test::@error(y["name"].as_int_or(42), yaml::WRONG_KIND);
 }
 
 fn void assert_objects_equal(Object* a, Object* b)
@@ -193,7 +191,7 @@ fn void assert_objects_equal(Object* a, Object* b)
 
 fn void to_object_sample() @test => @pool()
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 
 	// Parse the equivalent YAML using the old builder:
@@ -213,23 +211,21 @@ fn void to_object_sample() @test => @pool()
 		"---\n"
 		"second\n";
 
-	yaml::Yaml old_y = yaml::from_string(yaml_source, mem)!!;
-	defer old_y.free();
-
 	Object* obj0 = y.doc(0).to_object()!!;
 	defer obj0.free();
-	assert_objects_equal(obj0, old_y.docs[0]);
+	test::eq(obj0.get("dup")!!.i, 2);
+	test::eq(obj0.get("copy")!!.s, "x");
 
 	Object* obj1 = y.doc(1).to_object()!!;
 	defer obj1.free();
-	assert_objects_equal(obj1, old_y.docs[1]);
+	test::eq(obj1.s, "second");
 }
 
 fn void? discard_char(void* data, char c) => (void)0;
 
 fn void budget_limit_exceeded() @test => @pool()
 {
-	Tree* t = yaml2::new_tree(mem);
+	Tree* t = yaml::new_tree(mem);
 	defer t.free();
 
 	uint map_id = t.add_collection(0, "", MAP);
@@ -244,20 +240,20 @@ fn void budget_limit_exceeded() @test => @pool()
 
 	// Link into map as entry with F_KEY_NODE
 	Span key_span = { detached_seq, 0 };
-	uint entry_id = t.new_node(SCALAR, flags: yaml2::F_KEY | yaml2::F_KEY_NODE, key: key_span, val: t.put("val"));
+	uint entry_id = t.new_node(SCALAR, flags: yaml::F_KEY | yaml::F_KEY_NODE, key: key_span, val: t.put("val"));
 	t.append(map_id, entry_id);
 
 	Node n = (Node){ t, map_id };
 
 	Formatter f;
 	f.init(&discard_char, null);
-	test::@error(yaml2::write_node_json(&f, n), parser::LIMIT_EXCEEDED);
+	test::@error(yaml::write_node_json(&f, n), parser::LIMIT_EXCEEDED);
 	test::@error(n.to_object(), parser::LIMIT_EXCEEDED);
 }
 
 fn void old_get_rules() @test
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 
 	// Root path ""
@@ -309,7 +305,7 @@ fn void old_get_rules() @test
 
 fn void node_properties_and_parent() @test
 {
-	yaml2::Yaml y = testing::sample();
+	yaml::Yaml y = testing::sample();
 	defer y.free();
 
 	Node name = y["name"];

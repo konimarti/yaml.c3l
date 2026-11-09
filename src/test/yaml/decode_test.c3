@@ -1,4 +1,4 @@
-// Tests for yaml::decode{T}.
+// Tests for yaml::decode{T}, decode_node, decode_borrowed, and Node.decode.
 module yaml::decode_test;
 
 import std::io;
@@ -48,6 +48,16 @@ fn void scalars_and_nesting() @test => @pool()
 	test::eq(c.replicas.len, 2);
 	test::eq(c.replicas[1].host, "r2");
 	assert(c.replicas[1].level == MID);
+
+	// Test Node.decode macro method
+	Config c2 = y.doc(0).decode(Config, tmem, false)!!;
+	test::eq(c2.name, "app");
+	test::eq(c2.db.host, "h");
+
+	// Test decode_node free function
+	Config c3 = yaml::decode_node{Config}(y.doc(0), tmem, false)!!;
+	test::eq(c3.name, "app");
+	test::eq(c3.db.host, "h");
 }
 
 fn void all_integer_types() @test => @pool()
@@ -111,7 +121,24 @@ fn void second_document() @test => @pool()
 	Yaml y = parse("name: one\n---\nname: two\n");
 	test::eq(yaml::decode{Config}(y, tmem, false)!!.name, "one");
 	test::eq(yaml::decode_in{Config}(y, 1, tmem, false)!!.name, "two");
+	test::eq(yaml::decode_borrowed_in{Config}(y, 1, tmem, false)!!.name, "two");
+	test::eq(y.decode_borrowed(Config, 1, tmem, false)!!.name, "two");
+
+	// D9: missing document returns NOT_FOUND
+	test::@error(y.doc(5).decode(Config, tmem, false), NOT_FOUND);
+	test::@error(y.doc(5).decode_borrowed(Config, tmem, false), NOT_FOUND);
+	test::@error(yaml::decode_in{Config}(y, 5, tmem, false), NOT_FOUND);
+	test::@error(yaml::decode_borrowed_in{Config}(y, 5, tmem, false), NOT_FOUND);
+	test::@error(y.decode_borrowed(Config, 5, tmem, false), NOT_FOUND);
+	test::@error(yaml::decode_node{Config}(y.doc(5), tmem, false), NOT_FOUND);
+	test::@error(yaml::decode_borrowed{Config}(y.doc(5), tmem, false), NOT_FOUND);
+
+	Yaml y_empty = parse("");
+	test::@error(y_empty.doc(0).decode(Config, tmem, false), NOT_FOUND);
+	test::@error(y_empty.doc(0).decode_borrowed(Config, tmem, false), NOT_FOUND);
 }
+
+fn void free(Allocator a, void* p) @private => alloc::free(a, p);
 
 // Success: everything allocated is the caller's (here freed one by one); failure: nothing is left.
 fn void no_leaks() @test => @pool()
@@ -131,11 +158,18 @@ fn void no_leaks() @test => @pool()
 	foreach (r : c.replicas) free(&t, r.host.ptr);
 	free(&t, c.replicas.ptr);
 	test::eq(t.allocation_count(), 0);
+
 	String[] bad = {
 		"name: app\ndb: {host: h}\ntags: [a, b]\nreplicas: [{host: r1}, {host: 5}]\n",
 		"name: app\ntags: [a, b, 3]\n",
 		"name: app\ndb: {level: NOPE}\n",
 		"name: app\nretries: 99999999999\n",
+		"name: app\ndb: {ports: [1, 2, 3, 4]}\n",
+		"name: app\ndb: {ports: [1, x]}\n",
+		"name: app\ndb: [1, 2]\n",
+		"name: app\non: invalid_bool\n",
+		"name: 12345\n",
+		"- a\n",
 	};
 	foreach (b : bad)
 	{
@@ -146,4 +180,68 @@ fn void no_leaks() @test => @pool()
 	}
 }
 
-fn void free(Allocator a, void* p) @private => alloc::free(a, p);
+struct Simple
+{
+	String title;
+	int count;
+	String desc;
+}
+
+fn void decode_borrowed_test() @test => @pool()
+{
+	TrackingAllocator t;
+	t.init(mem);
+	defer t.free();
+
+	// 1. A struct with strings and scalars makes EXACTLY 0 allocations in decode_borrowed
+	Yaml y_simple = yaml::from_string("title: hello\ncount: 42\ndesc: world\n", mem, false)!!;
+	defer y_simple.free();
+	Simple s = yaml::decode_borrowed{Simple}(y_simple.doc(0), &t, false)!!;
+	test::eq(s.title, "hello");
+	test::eq(s.count, 42);
+	test::eq(s.desc, "world");
+	test::eq(t.allocation_count(), 0);
+
+	// Also verify Node.decode_borrowed macro
+	Simple s_macro = y_simple.doc(0).decode_borrowed(Simple, &t, false)!!;
+	test::eq(s_macro.title, "hello");
+	test::eq(s_macro.count, 42);
+	test::eq(s_macro.desc, "world");
+	test::eq(t.allocation_count(), 0);
+
+	// 2. A struct with slices allocates only the slice buffers, 0 string allocations
+	String good = "name: app\ndb: {host: h, level: LOW}\ntags: [a, b]\nreplicas: [{host: r1}, {host: r2}]\n";
+	Yaml y_complex = yaml::from_string(good, mem, false)!!;
+	defer y_complex.free();
+	Config c = yaml::decode_borrowed{Config}(y_complex.doc(0), &t, false)!!;
+	// Allocations: tags slice buffer (1) + replicas slice buffer (1) = 2 allocations
+	test::eq(t.allocation_count(), 2);
+	test::eq(c.name, "app");
+	test::eq(c.db.host, "h");
+	test::eq(c.tags.len, 2);
+	test::eq(c.tags[0], "a");
+	test::eq(c.tags[1], "b");
+	test::eq(c.replicas.len, 2);
+	test::eq(c.replicas[0].host, "r1");
+	test::eq(c.replicas[1].host, "r2");
+
+	// Free the two slice buffers:
+	free(&t, c.tags.ptr);
+	free(&t, c.replicas.ptr);
+	test::eq(t.allocation_count(), 0);
+
+	// 3. Error path unwinding with decode_borrowed leaves 0 allocations
+	String[] bad = {
+		"name: app\ndb: {host: h}\ntags: [a, b]\nreplicas: [{host: r1}, {host: 5}]\n",
+		"name: app\ntags: [a, b, 3]\n",
+		"name: app\ndb: {level: NOPE}\n",
+		"name: app\nretries: 99999999999\n",
+	};
+	foreach (b : bad)
+	{
+		Yaml yb = yaml::from_string(b, mem, false)!!;
+		defer yb.free();
+		test::@error(yaml::decode_borrowed{Config}(yb.doc(0), &t, false), yaml::DECODE_ERROR);
+		test::eq(t.allocation_count(), 0);
+	}
+}

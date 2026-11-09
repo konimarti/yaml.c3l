@@ -1,9 +1,9 @@
 // v2 contract. Card (c) owns this file; the only file that imports std::collections::object.
-module yaml2;
+module yaml;
 
 import std::io;
 import std::collections::object;
-import yaml2::parser;
+import yaml::parser;
 
 // The old builder's semantics: core schema, duplicates keep the last, the null key is "",
 // a collection key is its compact JSON text (MAX_KEY_TEXT budget). Free with Object.free.

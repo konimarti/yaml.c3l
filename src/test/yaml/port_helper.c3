@@ -1,8 +1,8 @@
 // Shared helpers for ported v2 tests.
-module yaml2::port_test_util;
+module yaml::port_test_util;
 
 import std::io, libc;
-import yaml2, yaml2::parser, yaml2::testing;
+import yaml, yaml::parser, yaml::testing;
 
 fn String stderr_of(String yaml, bool verbose, fault* f = null)
 {
@@ -11,7 +11,7 @@ fn String stderr_of(String yaml, bool verbose, fault* f = null)
 	defer libc::fclose(tmp);
 	File saved = *io::stderr();
 	*io::stderr() = file::from_handle(tmp);
-	Yaml? data = yaml2::from_string(yaml, mem, verbose);
+	Yaml? data = yaml::from_string(yaml, mem, verbose);
 	*io::stderr() = saved;
 	if (catch err = data)
 	{
@@ -67,12 +67,12 @@ fn void? check_json_limit(Yaml* y)
 {
 	Formatter f;
 	f.init(&discard_char, null);
-	(void)yaml2::write_yaml_json(&f, y)!;
+	(void)yaml::write_yaml_json(&f, y)!;
 }
 
 fn String? json(String yaml)
 {
-	Yaml data = yaml2::from_string(yaml, mem, false)!;
+	Yaml data = yaml::from_string(yaml, mem, false)!;
 	defer data.free();
 	return string::tformat("%s", data);
 }

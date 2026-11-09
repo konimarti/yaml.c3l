@@ -6,8 +6,6 @@ module bench;
 import std::io, std::time, std::sort, std::collections::list, std::collections::object;
 import yaml;
 import yaml::parser;
-import yaml2;
-import yaml2::parser;
 
 struct Server
 {
@@ -25,22 +23,14 @@ struct Config
 	Server[] servers;
 }
 
-// ---- the library API: old and new modes ----
+// ---- the library API ----
 
-// Old tree: parse, return number of documents, free.
-fn sz run_tree_old(String input, Allocator a)
-{
-	yaml::Yaml? data = yaml::from_string(input, a, false);
-	if (catch data) return 0;
-	defer data.free();
-	return data.len();
-}
 
 // New tree (v2): parse via from_string, return number of documents, free.
-fn sz run_tree2(String input, Allocator a, bool expect_reject = false)
+fn sz run_tree(String input, Allocator a, bool expect_reject = false)
 {
-	yaml2::Yaml? data = yaml2::from_string(input, a, false);
-	if (catch err = data) return (expect_reject && err == yaml2::parser::LIMIT_EXCEEDED) ? 0 : -1;
+	yaml::Yaml? data = yaml::from_string(input, a, false);
+	if (catch err = data) return (expect_reject && err == yaml::parser::LIMIT_EXCEEDED) ? 0 : -1;
 	defer data.free();
 	return expect_reject ? -1 : data.len();
 }
@@ -48,50 +38,35 @@ fn sz run_tree2(String input, Allocator a, bool expect_reject = false)
 // New tree (v2): parse via from_buffer in-place, return number of documents, free.
 fn sz run_from_buffer(char[] buf, Allocator a, bool expect_reject = false)
 {
-	yaml2::Yaml? data = yaml2::from_buffer(buf, a, false);
-	if (catch err = data) return (expect_reject && err == yaml2::parser::LIMIT_EXCEEDED) ? 0 : -1;
+	yaml::Yaml? data = yaml::from_buffer(buf, a, false);
+	if (catch err = data) return (expect_reject && err == yaml::parser::LIMIT_EXCEEDED) ? 0 : -1;
 	defer data.free();
 	return expect_reject ? -1 : data.len();
 }
 
-// Old events only: no tree. Returns the number of events, -1 on an error.
-fn sz run_events_old(String input) => @pool()
-{
-	yaml::parser::Parser p;
-	p.init(input, false);
-	sz n;
-	while (true)
-	{
-		yaml::parser::Event? e = p.next();
-		if (catch e) return 0;
-		n++;
-		if (e.type == STREAM_END) return n;
-	}
-}
 
 // New events only (v2): no tree, in-place scanner.
-fn sz run_events2(char[] buf, bool expect_reject = false) => @pool()
+fn sz run_events(char[] buf, bool expect_reject = false) => @pool()
 {
-	yaml2::parser::Parser p;
+	yaml::parser::Parser p;
 	p.init_inplace(buf, false, mem);
 	defer p.free();
 	sz n;
 	while (true)
 	{
-		yaml2::parser::Event? e = p.next();
-		if (catch err = e) return (expect_reject && err == yaml2::parser::LIMIT_EXCEEDED) ? 0 : -1;
+		yaml::parser::Event? e = p.next();
+		if (catch err = e) return (expect_reject && err == yaml::parser::LIMIT_EXCEEDED) ? 0 : -1;
 		n++;
 		if (e.type == STREAM_END) return expect_reject ? -1 : n;
 	}
 }
 
-// Old load tree.
-fn yaml::Yaml? load_tree_old(String input) => yaml::from_string(input, mem, false);
 
 // New load tree.
-fn yaml2::Yaml? load_tree2(String input) => yaml2::from_string(input, mem, false);
+fn yaml::Yaml? load_tree(String input) => yaml::from_string(input, mem, false);
 
-// Old decode{Config}
+
+// New decode{Config}
 fn sz run_decode(yaml::Yaml tree, Allocator a)
 {
 	Config? c = yaml::decode{Config}(tree, a, false);
@@ -99,43 +74,17 @@ fn sz run_decode(yaml::Yaml tree, Allocator a)
 	return c.servers.len;
 }
 
-// New decode{Config}
-fn sz run_decode2(yaml2::Yaml tree, Allocator a)
-{
-	Config? c = yaml2::decode{Config}(tree, a, false);
-	if (catch c) return -1;
-	return c.servers.len;
-}
-
-// Old JSON serialization
-fn sz run_json_old(yaml::Yaml tree) => @pool()
-{
-	String s = string::tformat("%s", tree);
-	return s.len;
-}
 
 // New JSON serialization
-fn sz run_json2(yaml2::Yaml tree) => @pool()
+fn sz run_json(yaml::Yaml tree) => @pool()
 {
 	String s = string::tformat("%s", tree);
 	return s.len;
 }
 
-// Old find: look up 1,000 keys
-fn sz run_find_old(yaml::Yaml tree)
-{
-	sz found = 0;
-	for (int i = 0; i < 1000; i++)
-	{
-		String key = string::tformat("map_100k.k_%d", i * 100);
-		if (try tree.get(key)) found++;
-	}
-	assert(found == 1000, "find must locate all keys");
-	return found;
-}
 
 // New find: look up 1,000 keys
-fn sz run_find2(yaml2::Yaml tree)
+fn sz run_find(yaml::Yaml tree)
 {
 	sz found = 0;
 	for (int i = 0; i < 1000; i++)
@@ -147,36 +96,9 @@ fn sz run_find2(yaml2::Yaml tree)
 	return found;
 }
 
-fn sz count_nodes_old(Object* o)
-{
-	if (!o) return 0;
-	sz n = 1;
-	if (o.is_map())
-	{
-		o.@each_entry(; String k, Object* v) { n += count_nodes_old(v); };
-	}
-	else if (o.is_array())
-	{
-		for (sz i = 0; i < o.get_len(); i++)
-		{
-			n += count_nodes_old(o.get_at(i));
-		}
-	}
-	return n;
-}
 
-// Old foreach: iterate all collection elements recursively
-fn sz run_foreach_old(yaml::Yaml tree)
-{
-	sz n = 0;
-	for (sz d = 0; d < tree.docs.len(); d++)
-	{
-		n += count_nodes_old(tree.docs[d]);
-	}
-	return n;
-}
 
-fn sz count_nodes2(yaml2::Node n)
+fn sz count_nodes(yaml::Node n)
 {
 	if (!n.exists()) return 0;
 	sz n_count = 1;
@@ -184,29 +106,29 @@ fn sz count_nodes2(yaml2::Node n)
 	{
 		foreach (e : n.entries())
 		{
-			n_count += count_nodes2(e.value);
+			n_count += count_nodes(e.value);
 		}
 	}
 	else if (n.is_seq())
 	{
 		foreach (x : n.items())
 		{
-			n_count += count_nodes2(x);
+			n_count += count_nodes(x);
 		}
 	}
 	return n_count;
 }
 
 // New foreach: iterate all collection elements recursively
-fn sz run_foreach2(yaml2::Yaml tree)
+fn sz run_foreach(yaml::Yaml tree)
 {
 	sz n = 0;
 	if (!tree.tree) return 0;
 	uint child = tree.tree.nodes[0].first;
 	while (child != 0)
 	{
-		yaml2::Node doc = (yaml2::Node){ tree.tree, child };
-		n += count_nodes2(doc);
+		yaml::Node doc = (yaml::Node){ tree.tree, child };
+		n += count_nodes(doc);
 		child = tree.tree.nodes[child].next;
 	}
 	return n;
@@ -265,28 +187,15 @@ fn int main(String[] args)
 	bool expect_reject = path.contains("257") || path.contains("2041");
 	double rss_base = rss_kb();
 
-	yaml::Yaml old_tree;
-	yaml2::Yaml new_tree;
-	bool has_old_tree = false;
+	yaml::Yaml new_tree;
 	bool has_new_tree = false;
 
 	if (mode == "decode" || mode == "json" || mode == "find" || mode == "foreach")
 	{
-		yaml::Yaml? t = load_tree_old(input);
+		yaml::Yaml? t = load_tree(input);
 		if (catch t)
 		{
-			io::eprintfn("%s: does not parse with old library", path);
-			return 1;
-		}
-		old_tree = t;
-		has_old_tree = true;
-	}
-	if (mode == "decode2" || mode == "json2" || mode == "find2" || mode == "foreach2")
-	{
-		yaml2::Yaml? t = load_tree2(input);
-		if (catch t)
-		{
-			io::eprintfn("%s: does not parse with v2 library", path);
+			io::eprintfn("%s: does not parse", path);
 			return 1;
 		}
 		new_tree = t;
@@ -295,13 +204,12 @@ fn int main(String[] args)
 
 	defer
 	{
-		if (has_old_tree) old_tree.free();
 		if (has_new_tree) new_tree.free();
 	}
 
 	// Buffer for in-place modes (re-copied before each run outside the clock)
 	char[] buf = {};
-	bool needs_buf = (mode == "from_buffer" || mode == "events2");
+	bool needs_buf = (mode == "from_buffer" || mode == "events");
 	if (needs_buf)
 	{
 		buf = alloc::alloc_array(mem, char, input.len);
@@ -331,30 +239,18 @@ fn int main(String[] args)
 			t = clock::now();
 			d.free();
 		}
-		else if (mode == "free2")
-		{
-			yaml2::Yaml d = yaml2::from_string(input, mem, false)!!;
-			t = clock::now();
-			d.free();
-		}
 		else
 		{
 			t = clock::now();
 			switch (mode)
 			{
-				case "tree": run_tree_old(input, mem);
-				case "tree2": run_tree2(input, mem, expect_reject);
+				case "tree": run_tree(input, mem, expect_reject);
 				case "from_buffer": run_from_buffer(buf, mem, expect_reject);
-				case "events": run_events_old(input);
-				case "events2": run_events2(buf, expect_reject);
-				case "decode": run_decode(old_tree, &arena);
-				case "decode2": run_decode2(new_tree, &arena);
-				case "json": run_json_old(old_tree);
-				case "json2": run_json2(new_tree);
-				case "find": run_find_old(old_tree);
-				case "find2": run_find2(new_tree);
-				case "foreach": run_foreach_old(old_tree);
-				case "foreach2": run_foreach2(new_tree);
+				case "events": run_events(buf, expect_reject);
+				case "decode": run_decode(new_tree, &arena);
+				case "json": run_json(new_tree);
+				case "find": run_find(new_tree);
+				case "foreach": run_foreach(new_tree);
 				default:
 					io::eprintfn("unknown mode %s", mode);
 					return 2;
@@ -368,7 +264,7 @@ fn int main(String[] args)
 	// Allocation counts through TrackingAllocator
 	TrackingAllocator tracker;
 	Allocator inner = mem;
-	if (mode == "decode" || mode == "decode2") inner = &arena;
+	if (mode == "decode") inner = &arena;
 	tracker.init(inner);
 	sz result = 0;
 
@@ -379,24 +275,15 @@ fn int main(String[] args)
 
 	switch (mode)
 	{
-		case "tree": result = run_tree_old(input, &tracker);
-		case "tree2": result = run_tree2(input, &tracker, expect_reject);
+		case "tree": result = run_tree(input, &tracker, expect_reject);
 		case "from_buffer": result = run_from_buffer(buf, &tracker, expect_reject);
-		case "events": result = run_events_old(input);
-		case "events2": result = run_events2(buf, expect_reject);
-		case "decode": result = run_decode(old_tree, &tracker);
-		case "decode2": result = run_decode2(new_tree, &tracker);
-		case "json": result = run_json_old(old_tree);
-		case "json2": result = run_json2(new_tree);
-		case "find": result = run_find_old(old_tree);
-		case "find2": result = run_find2(new_tree);
-		case "foreach": result = run_foreach_old(old_tree);
-		case "foreach2": result = run_foreach2(new_tree);
+		case "events": result = run_events(buf, expect_reject);
+		case "decode": result = run_decode(new_tree, &tracker);
+		case "json": result = run_json(new_tree);
+		case "find": result = run_find(new_tree);
+		case "foreach": result = run_foreach(new_tree);
 		case "free":
 			yaml::Yaml d = yaml::from_string(input, &tracker, false)!!;
-			d.free();
-		case "free2":
-			yaml2::Yaml d = yaml2::from_string(input, &tracker, false)!!;
 			d.free();
 	}
 

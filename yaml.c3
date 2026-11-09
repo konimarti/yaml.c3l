@@ -1,141 +1,95 @@
+// v2 contract. Card (b) owns this file: the parse functions, the builder entry and free.
 module yaml;
 
+import std::math;
 import std::io;
-import std::collections::object;
-import std::collections::list;
-
 import yaml::parser;
 
-faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS;
+faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS, WRONG_KIND, OUT_OF_RANGE, DECODE_ERROR;   // + NOT_FOUND (std)
 
-struct Yaml (Printable)   // to_format prints JSON, one document per line
+// The handle of a parsed stream. A value type: copies are handles of the same tree, so free
+// exactly one of them (Yaml.free clears only the variable it is called on).
+struct Yaml (Printable)
 {
-	List {Object*} docs;
-	Allocator allocator;
+	Tree* tree;
 }
 
-fn sz? Yaml.to_format(&self, Formatter* f) @dynamic
+// Compact JSON, one document per line (json.c3, card (c)).
+fn sz? Yaml.to_format(&self, Formatter* f) @dynamic => write_yaml_json(f, self);
+
+fn void Yaml.free(&self)
 {
-	sz n = 0;
-	foreach (o : self.docs) n += write_json(f, o)! + f.print("\n")!;
-	return n;
+	if (self.tree) self.tree.free();
+	self.tree = null;
 }
 
-// Prints an Object as compact JSON (Object.to_format does not escape strings).
-struct Json (Printable) @private
+fn Yaml? parse_buffer(char[] buf, bool owns_input, Allocator allocator = mem, bool verbose = true) @private
 {
-	Object* o;
-}
+	Tree* t = new_tree(allocator, buf, owns_input: owns_input);
+	defer catch t.free();
+	uint initial_nodes = math::max(64u, (uint)(buf.len / 14));
+	t.reserve_nodes(initial_nodes);
 
-fn sz? Json.to_format(&self, Formatter* f) @dynamic => write_json(f, self.o);
-
-fn sz? write_json(Formatter* f, Object* o) @private
-{
-	switch
-	{
-		case o.is_null(): return f.print("null");
-		case o.is_bool(): return f.print(o.b ? "true" : "false");
-		case o.is_int(): return f.printf("%d", o.i);
-		case o.is_float(): return write_float(f, o.f);
-		case o.is_string(): return write_string(f, o.s);
-		case o.is_array():
-			sz n = f.print("[")!;
-			for (sz i = 0; i < o.get_len(); i++)
-			{
-				if (i) n += f.print(",")!;
-				n += write_json(f, o.get_at(i))!;
-			}
-			return n + f.print("]")!;
-		default:
-			sz n = f.print("{")!;
-			bool first = true;
-			o.@each_entry(; String key, Object* value)
-			{
-				if (!first) n += f.print(",")!;
-				first = false;
-				n += write_string(f, key)! + f.print(":")!;
-				n += write_json(f, value)!;
-			};
-			return n + f.print("}")!;
-	}
-}
-
-// The shortest of %.15g, %.16g, %.17g that reads back as the same double, with a '.' or an
-// exponent; no JSON for inf/nan.
-fn sz? write_float(Formatter* f, double d) @private
-{
-	if (d != d || d == double::inf || d == -double::inf) return f.print("null");
-	String s;
-	foreach (format : (String[]){ "%.15g", "%.16g", "%.17g" })
-	{
-		s = string::tformat(format, d);
-		double? back = s.to_double();   // fails when rounding goes past DBL_MAX; %.17g always reads back
-		if (try back && back == d) break;
-	}
-	if (s.contains_char('.') || s.contains_char('e')) return f.print(s);
-	return f.print(s)! + f.print(".0")!;   // stays a float: "1" would read back as an int
-}
-
-// RFC 8259 string escapes.
-fn sz? write_string(Formatter* f, String s) @private
-{
-	sz n = f.print("\"")!;
-	foreach (c : s)
-	{
-		switch (c)
-		{
-			case '"': n += f.print(`\"`)!;
-			case '\\': n += f.print(`\\`)!;
-			case '\n': n += f.print(`\n`)!;
-			case '\t': n += f.print(`\t`)!;
-			case '\r': n += f.print(`\r`)!;
-			case '\b': n += f.print(`\b`)!;
-			case '\f': n += f.print(`\f`)!;
-			default: n += c < 0x20 ? f.printf("\\u%04x", c)! : f.print_char(c)!;
-		}
-	}
-	return n + f.print("\"")!;
-}
-
-// The parser emits exactly one node (maybe an empty scalar) per document.
-fn Yaml? from_string(String s, Allocator allocator = mem, bool verbose = true) => @pool()
-{
 	Parser parser;
-	parser.init(s, verbose);
-	Budget budget = { .max_key_text = parser::MAX_KEY_TEXT + parser::KEY_TEXT_PER_BYTE * s.len };   // one for all documents
-	Yaml data = { .allocator = allocator };
-	data.docs.init(allocator);
-	defer catch data.free();
-	while (true)
-	{
-		Event ev = parser.next()!;
-		switch (ev.type)
-		{
-			case STREAM_END: return data;
-			case SCALAR:
-			case SEQUENCE_START:
-			case MAPPING_START:
-			case ALIAS: data.docs.push(build_document(&parser, ev, allocator, &budget)!);
-			default: break;
-		}
-	}
+	parser.init_inplace(buf, verbose, allocator);
+	defer parser.free();
+
+	Builder b;
+	b.init(t, &parser, allocator, verbose);
+	defer b.free();
+
+	b.build_stream()!;
+	t.arena = parser.take_spill();
+	t.input = parser.input();
+	return (Yaml){ t };
 }
 
-fn Yaml? from_stream(InStream reader, Allocator allocator = mem, bool verbose = true) => @pool()
+// Copy the input once (the tree owns the copy), then parse the copy in place.
+fn Yaml? from_string(String s, Allocator allocator = mem, bool verbose = true)
+{
+	char[] copy = {};
+	if (s.len)
+	{
+		copy = alloc::alloc_array(allocator, char, s.len);
+		mem::copy(copy.ptr, s.ptr, s.len);
+	}
+	return parse_buffer(copy, s.len != 0, allocator, verbose);
+}
+
+fn Yaml? from_stream(InStream reader, Allocator allocator = mem, bool verbose = true)
 {
 	ByteWriter writer;
-	io::copy_to(reader, writer.tinit())!;
-	return from_string(writer.str_view(), allocator, verbose);
+	writer.init(allocator);
+	io::copy_to(reader, &writer)!;
+	char[] buf = writer.array_view();
+	writer.bytes = {}; // transfer ownership to tree
+	return parse_buffer(buf, true, allocator, verbose);
 }
 
 fn Yaml? from_file(String filename, Allocator allocator = mem, bool verbose = true)
 {
 	File f = io::file::open(filename, "rb")!;
 	defer (void)f.close();
-	return from_stream(&f, allocator, verbose)!;
+	long? fsz = f.size();
+	if (try size = fsz && size >= 0)
+	{
+		char[] buf = alloc::alloc_array(allocator, char, (sz)size);
+		defer catch alloc::free(allocator, buf);
+		sz read = f.read(buf)!;
+		return parse_buffer(buf[:read], true, allocator, verbose);
+	}
+	return from_stream(&f, allocator, verbose);
 }
 
-// Parses a String, a char[], a DString or an InStream (a File, a ByteReader, ...) by its type.
+// IN PLACE: `buf` must be WRITABLE (a String literal converts to char[] and crashes on the first
+// write) and its content is destroyed. Not copied: the caller owns `buf` and keeps it alive as
+// long as the Yaml. The tree allocates nodes (and spills) with `allocator`.
+fn Yaml? from_buffer(char[] buf, Allocator allocator = mem, bool verbose = true)
+{
+	return parse_buffer(buf, false, allocator, verbose);
+}
+
+// Parses a String, a char[] (both COPIED), a DString or an InStream (a File, a ByteReader, ...) by its type.
 macro Yaml? parse(input, Allocator allocator = mem, bool verbose = true)
 {
 	$switch $Typeof(input):
@@ -152,48 +106,3 @@ macro Yaml? parse(input, Allocator allocator = mem, bool verbose = true)
 
 // Like parse, with tmem: the result lives until the end of the enclosing @pool().
 macro Yaml? tparse(input, bool verbose = true) => parse(input, tmem, verbose);
-
-// "a.b.0": map keys and array indexes separated by '.'; document 0. An empty segment or an
-// index with a leading zero is NOT_FOUND; keys that are empty or contain '.' are not reachable.
-fn Object*? Yaml.get(&self, String path) @operator([]) => self.get_in(0, path);
-
-fn Object*? Yaml.get_in(&self, sz doc, String path)
-{
-	if (doc >= self.docs.len()) return NOT_FOUND~;
-	Object* o = self.docs[doc];
-	if (!path.len) return o;
-	foreach (segment : path.tsplit("."))
-	{
-		if (!segment.len) return NOT_FOUND~;   // "a.", "a..b", ".a"
-		if (o.is_array())
-		{
-			sz i = 0;
-			// only plain digits, no leading zero
-			if (!digits(segment, &i) || i != segment.len || (segment[0] == '0' && segment.len > 1)) return NOT_FOUND~;
-			int? index = segment.to_int();
-			if (catch index) return NOT_FOUND~;
-			if (index >= o.get_len()) return NOT_FOUND~;
-			o = o.get_at(index);
-		}
-		else if (o.is_map())
-		{
-			o = o.get(segment)!;
-		}
-		else
-		{
-			return NOT_FOUND~;
-		}
-	}
-	return o;
-}
-
-fn sz Yaml.len(&self) @operator(len)
-{
-	return self.docs.len();
-}
-
-fn void Yaml.free(&self)
-{
-	foreach (obj : self.docs) obj.free();
-	self.docs.free();
-}

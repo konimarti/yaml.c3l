@@ -2,7 +2,7 @@
 // Maintains write cursor w <= read cursor r (limit) in the buffer.
 // Spills to Arena on growth overflow (\L, \P) when a spill allocator is present.
 // Blanks leftover [w, orig_end) with spaces upon completion (M7).
-module yaml2::parser;
+module yaml::parser;
 
 import std::io;
 

@@ -2,10 +2,10 @@
 // Rules: `[]` / `find` never fail (they give a missing node); `get` is the checked form (NOT_FOUND).
 // Aliases are followed by every reader; shadowed (overridden duplicate) entries are skipped.
 // A missing node: exists() is false, kind() is MISSING, is_null() is false, as_* fault NOT_FOUND.
-module yaml2;
+module yaml;
 
 import std::io;
-import yaml2::parser;
+import yaml::parser;
 
 enum Kind : char { MISSING, NULL, BOOL, INT, FLOAT, STRING, SEQUENCE, MAPPING }
 

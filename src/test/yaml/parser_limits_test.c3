@@ -1,11 +1,11 @@
 // Tests for parser limits (M2, M3).
 // MAX_DEPTH = 256 for collections and block indents; 257 => LIMIT_EXCEEDED.
 // MAX_TAG_DIRECTIVES = 16; 17th => LIMIT_EXCEEDED.
-module yaml2::parser_test;
+module yaml::parser_test;
 
 import std::io;
-import yaml2::parser;
-import yaml2::testing;
+import yaml::parser;
+import yaml::testing;
 
 fn void depth_256_and_257_flow() @test => @pool()
 {

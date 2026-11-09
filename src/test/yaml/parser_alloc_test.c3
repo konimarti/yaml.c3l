@@ -1,9 +1,9 @@
 // Allocation test: next() loop over the whole suite makes 0 allocations and 0 tmem allocations.
-module yaml2::parser_test;
+module yaml::parser_test;
 
 import std::io, std::io::path, std::core::mem::allocators;
-import yaml2::parser;
-import yaml2::testing;
+import yaml::parser;
+import yaml::testing;
 
 struct AllocTestState
 {

@@ -1,9 +1,9 @@
 // Tests for growth exceptions, spill allocator, CRLF, BOM, and blanking (M2, M7, N5).
-module yaml2::parser_test;
+module yaml::parser_test;
 
 import std::io;
-import yaml2::parser;
-import yaml2::testing;
+import yaml::parser;
+import yaml::testing;
 
 // Growth exception 1: \L and \P (2 bytes in -> 3 bytes out UTF-8).
 fn void growth_exception_1_spill() @test => @pool()
