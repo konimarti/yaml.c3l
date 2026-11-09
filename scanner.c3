@@ -2,7 +2,8 @@
 module yaml::parser;
 import std::io, std::collections::list;
 
-faultdef INVALID_INDENTATION, MISSING_COLON, INVALID_TAB;
+faultdef INVALID_INDENTATION, MISSING_COLON, INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE,
+	INVALID_BLOCK_HEADER;
 
 // Mark, ScalarStyle and SYNTAX_ERROR stay in event.c3. Move TokenType/Token from event.c3 to here.
 enum TokenType : char
@@ -92,7 +93,8 @@ fn void Scanner.advance(&self)
 	self.mark.pos++;
 }
 
-fn void? Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
+// Report an error (unless !verbose) and return its fault: `return self.error(m, msg)~;`.
+fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 {
 	self.error_mark = m;
 	if (self.verbose)
@@ -105,7 +107,7 @@ fn void? Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 		(void)io::eprintn(self.s[start:end - start]);
 		(void)io::eprintfn("%*s^", m.column - 1, "");
 	}
-	return f~;
+	return f;
 }
 
 // ---- token queue ---------------------------------------------------------
@@ -163,8 +165,10 @@ fn void? Scanner.fetch_next_token(&self)
 	if (c == ':' && is_blankz(n)) return self.fetch_value();
 	if (c == '?' && is_blankz(n)) return self.fetch_key();
 	if (self.at_marker()) return self.fetch_document_indicator(c == '-' ? T_DOCUMENT_START : T_DOCUMENT_END);
-	// M3: quotes and block scalars, M4: flow indicators, M5: properties and directives
-	if (INDICATORS.contains_char(c)) return self.error(self.mark, "character not supported yet");
+	if (c == '\'' || c == '"') return self.fetch_flow_scalar(c == '\'');
+	if (c == '|' || c == '>') return self.fetch_block_scalar(c == '|');
+	// M4: flow indicators, M5: properties and directives
+	if (INDICATORS.contains_char(c)) return self.error(self.mark, "character not supported yet")~;
 	return self.fetch_plain();
 }
 
@@ -251,7 +255,7 @@ fn void? Scanner.remove_simple_key(&self)
 {
 	if (self.key.possible && self.key.required)
 	{
-		return self.error(self.key.mark, "could not find expected ':'", MISSING_COLON);
+		return self.error(self.key.mark, "could not find expected ':'", MISSING_COLON)~;
 	}
 	self.key.possible = false;
 }
@@ -277,12 +281,12 @@ fn void? Scanner.fetch_stream_end(&self)
 
 fn void? Scanner.fetch_block_entry(&self)
 {
-	if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB);
+	if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
 	if (self.indent < self.col())
 	{
 		if (!self.compact_ok || !self.simple_key_allowed)
 		{
-			return self.error(self.mark, "block sequence entries are not allowed here");
+			return self.error(self.mark, "block sequence entries are not allowed here")~;
 		}
 		self.roll_indent(self.col(), T_BLOCK_SEQUENCE_START, self.mark);
 	}
@@ -299,10 +303,10 @@ fn void? Scanner.fetch_value(&self)
 	if (self.key.possible)
 	{
 		SimpleKey k = self.key;
-		if (k.tab_indent) return self.error(k.mark, "tab character in indentation", INVALID_TAB);
+		if (k.tab_indent) return self.error(k.mark, "tab character in indentation", INVALID_TAB)~;
 		if (self.indent < k.mark.column - 1 && !k.compact_ok)
 		{
-			return self.error(k.mark, "mapping values are not allowed here");
+			return self.error(k.mark, "mapping values are not allowed here")~;
 		}
 		self.tokens.insert_at(k.token_number - self.tokens_taken, { .type = T_KEY, .start = k.mark });
 		self.roll_indent(k.mark.column - 1, T_BLOCK_MAPPING_START, k.mark, k.token_number);
@@ -313,7 +317,7 @@ fn void? Scanner.fetch_value(&self)
 	else
 	{
 		// value of an explicit '?' key, or an empty key
-		if (!self.simple_key_allowed) return self.error(self.mark, "mapping values are not allowed here");
+		if (!self.simple_key_allowed) return self.error(self.mark, "mapping values are not allowed here")~;
 		self.roll_indent(self.col(), T_BLOCK_MAPPING_START, self.mark);
 		self.simple_key_allowed = true;
 		self.compact_ok = self.peek(1) == ' ';
@@ -325,10 +329,10 @@ fn void? Scanner.fetch_value(&self)
 
 fn void? Scanner.fetch_key(&self)
 {
-	if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB);
+	if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
 	if (self.indent < self.col())
 	{
-		if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, "explicit keys are not allowed here");
+		if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, "explicit keys are not allowed here")~;
 		self.roll_indent(self.col(), T_BLOCK_MAPPING_START, self.mark);
 	}
 	self.remove_simple_key()!;
@@ -339,7 +343,7 @@ fn void? Scanner.fetch_key(&self)
 	self.push(T_KEY, m);
 }
 
-const String INDICATORS = "[]{},&*!|>'\"%@`#";
+const String INDICATORS = "[]{},&*!%@`#";
 
 fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 {
@@ -421,5 +425,281 @@ fn String Scanner.scan_plain(&self)
 		}
 		while (self.mark.pos < i) self.advance();
 		breaks = n;
+	}
+}
+
+// Number of spaces at the start of the current line (a TAB is not indentation).
+fn int Scanner.line_indent(&self)
+{
+	sz i = self.mark.pos - (sz)(self.mark.column - 1);
+	int n = 0;
+	while (i + n < self.s.len && self.s[i + n] == ' ') n++;
+	return n;
+}
+
+// ---- quoted scalars ------------------------------------------------------
+
+fn void? Scanner.fetch_flow_scalar(&self, bool single)
+{
+	self.save_simple_key()!;
+	Mark m = self.mark;
+	String value = self.scan_flow_scalar(single)!;
+	self.simple_key_allowed = false;
+	self.compact_ok = false;
+	// only blanks, then ':', a comment or the end of the line may follow (M4: ", ] }" in flow)
+	sz i = self.mark.pos;
+	while (i < self.s.len && (self.s[i] == ' ' || self.s[i] == '\t')) i++;
+	char c = i < self.s.len ? self.s[i] : '\n';
+	bool ok = c == '\n' || (c == '#' && i > self.mark.pos) || (c == ':' && (i + 1 == self.s.len || is_blankz(self.s[i + 1])));
+	if (!ok) return self.error(self.mark, "unexpected text after a quoted scalar")~;
+	self.tokens.push({ .type = T_SCALAR, .start = m, .value = value, .style = single ? SINGLE : DOUBLE });
+}
+
+fn String? Scanner.scan_flow_scalar(&self, bool single)
+{
+	Mark start = self.mark;
+	char quote = self.peek();
+	self.advance();
+	DString buf = dstring::temp();
+	while (true)
+	{
+		if (self.at_marker()) return self.error(self.mark, "document marker inside a quoted scalar")~;
+		if (self.at_end()) return self.error(start, "unclosed quoted scalar", UNCLOSED_QUOTE)~;
+		// non-blank characters
+		bool escaped_break = false;
+		while (!self.at_end())
+		{
+			char c = self.peek();
+			if (c == ' ' || c == '\t' || c == '\n') break;
+			if (single && c == '\'' && self.peek(1) == '\'')
+			{
+				buf.append_char('\'');
+				self.advance();
+				self.advance();
+				continue;
+			}
+			if (c == quote)
+			{
+				self.advance();
+				return buf.str_view();
+			}
+			if (!single && c == '\\')
+			{
+				if (self.peek(1) == '\n')
+				{
+					self.advance();
+					escaped_break = true;
+					break;
+				}
+				self.scan_escape(&buf)!;
+				continue;
+			}
+			buf.append_char(c);
+			self.advance();
+		}
+		// blanks and line breaks: blanks inside a line are kept, around a break they are dropped
+		sz blanks = self.mark.pos;
+		int breaks = 0;
+		while (true)
+		{
+			char c = self.peek();
+			if (c == '\n')
+			{
+				breaks++;
+			}
+			else if (c != ' ' && c != '\t')
+			{
+				break;
+			}
+			self.advance();
+		}
+		if (breaks == 0)
+		{
+			buf.append(self.s[blanks:self.mark.pos - blanks]);
+			continue;
+		}
+		if (!self.at_end() && self.line_indent() <= self.indent)
+		{
+			return self.error(self.mark, "continuation line of a quoted scalar is not indented enough", INVALID_INDENTATION)~;
+		}
+		// one break folds to a space, n breaks give n-1 line feeds; an escaped break gives no space
+		if (breaks == 1 && !escaped_break) buf.append_char(' ');
+		for (int i = 2; i <= breaks; i++) buf.append_char('\n');
+	}
+}
+
+// One escape sequence of a double-quoted scalar, at the backslash.
+fn void? Scanner.scan_escape(&self, DString* buf)
+{
+	Mark m = self.mark;
+	self.advance();
+	char c = self.peek();
+	self.advance();
+	int digits;
+	switch (c)
+	{
+		case '0': buf.append_char('\0');
+		case 'a': buf.append_char(0x07);
+		case 'b': buf.append_char(0x08);
+		case 't':
+		case '\t': buf.append_char('\t');
+		case 'n': buf.append_char('\n');
+		case 'v': buf.append_char(0x0b);
+		case 'f': buf.append_char(0x0c);
+		case 'r': buf.append_char('\r');
+		case 'e': buf.append_char(0x1b);
+		case ' ':
+		case '"':
+		case '/':
+		case '\\': buf.append_char(c);
+		case 'N': buf.append_char32(0x85);
+		case '_': buf.append_char32(0xa0);
+		case 'L': buf.append_char32(0x2028);
+		case 'P': buf.append_char32(0x2029);
+		case 'x': digits = 2;
+		case 'u': digits = 4;
+		case 'U': digits = 8;
+		default: return self.error(m, "invalid escape sequence", INVALID_ESCAPE)~;
+	}
+	if (!digits) return;
+	uint code = 0;
+	for (int i = 0; i < digits; i++)
+	{
+		char h = self.peek();
+		uint v;
+		switch
+		{
+			case h >= '0' && h <= '9': v = h - '0';
+			case (h | 0x20) >= 'a' && (h | 0x20) <= 'f': v = (h | 0x20) - 'a' + 10;
+			default: return self.error(m, "invalid hex digit in escape sequence", INVALID_ESCAPE)~;
+		}
+		code = code * 16 + v;
+		self.advance();
+	}
+	if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return self.error(m, "invalid Unicode code point", INVALID_ESCAPE)~;
+	buf.append_char32(code);
+}
+
+// ---- block scalars -------------------------------------------------------
+
+fn void? Scanner.fetch_block_scalar(&self, bool literal)
+{
+	self.remove_simple_key()!;
+	Mark m = self.mark;
+	String value = self.scan_block_scalar(literal)!;
+	// the scanner is now at the start of the line that ended the scalar
+	self.simple_key_allowed = true;
+	self.compact_ok = true;
+	self.tab_indent = false;
+	self.tokens.push({ .type = T_SCALAR, .start = m, .value = value, .style = literal ? LITERAL : FOLDED });
+}
+
+fn String? Scanner.scan_block_scalar(&self, bool literal)
+{
+	self.advance();
+	// header: chomping ('-' strip, '+' keep) and indentation indicator 1-9, in either order
+	int chomp = 0;
+	int increment = 0;
+	while (true)
+	{
+		char c = self.peek();
+		if ((c == '-' || c == '+') && !chomp)
+		{
+			chomp = c == '+' ? 1 : -1;
+		}
+		else if (c >= '1' && c <= '9' && !increment)
+		{
+			increment = c - '0';
+		}
+		else if ((c >= '0' && c <= '9') || c == '-' || c == '+')
+		{
+			return self.error(self.mark, "invalid block scalar header", INVALID_BLOCK_HEADER)~;
+		}
+		else
+		{
+			break;
+		}
+		self.advance();
+	}
+	sz blanks = self.mark.pos;
+	while (self.peek() == ' ' || self.peek() == '\t') self.advance();
+	if (self.peek() == '#' && self.mark.pos > blanks)
+	{
+		while (!self.at_end() && self.peek() != '\n') self.advance();
+	}
+	if (!self.at_end() && self.peek() != '\n')
+	{
+		return self.error(self.mark, "invalid block scalar header", INVALID_BLOCK_HEADER)~;
+	}
+	self.advance();
+
+	// content indentation: given by the indicator, or detected from the first non-empty line
+	int min_indent = self.indent + 1;   // indent >= -1
+	int indent = increment ? (self.indent > 0 ? self.indent : 0) + increment : -1;
+	int max_empty = 0;
+	int breaks = self.block_breaks(indent, min_indent, &max_empty)!;
+	if (indent < 0)
+	{
+		indent = self.col() > min_indent ? self.col() : min_indent;
+		if (!self.at_end() && self.col() >= min_indent && max_empty > self.col())
+		{
+			return self.error(self.mark, "leading empty lines are more indented than the content", INVALID_INDENTATION)~;
+		}
+	}
+
+	DString buf = dstring::temp();
+	bool line_break = false;    // a break follows the previous content line
+	bool more_indented = false; // the previous content line started with a blank
+	while (self.col() == indent && !self.at_end() && !self.at_marker())
+	{
+		bool blank = self.peek() == ' ' || self.peek() == '\t';
+		// folded: a single break between two normal lines becomes a space
+		if (!literal && line_break && !more_indented && !blank)
+		{
+			if (!breaks) buf.append_char(' ');
+		}
+		else if (line_break)
+		{
+			buf.append_char('\n');
+		}
+		for (int i = 0; i < breaks; i++) buf.append_char('\n');
+		more_indented = blank;
+		sz from = self.mark.pos;
+		while (!self.at_end() && self.peek() != '\n') self.advance();
+		buf.append(self.s[from:self.mark.pos - from]);
+		line_break = true;   // the end of the input ends the last line like a line break
+		breaks = 0;
+		if (self.at_end()) break;
+		self.advance();
+		breaks = self.block_breaks(indent, min_indent, &max_empty)!;
+	}
+	// chomping of the final line break and the trailing empty lines
+	if (chomp >= 0 && line_break) buf.append_char('\n');
+	if (chomp > 0)
+	{
+		for (int i = 0; i < breaks; i++) buf.append_char('\n');
+	}
+	return buf.str_view();
+}
+
+// Skip the indentation and the empty lines before a block scalar line; return the number of
+// empty lines. `indent` < 0: not known yet (only spaces are skipped, `max_empty` records the
+// widest empty line). A TAB inside the indentation is an error.
+fn int? Scanner.block_breaks(&self, int indent, int min_indent, int* max_empty)
+{
+	int breaks = 0;
+	while (true)
+	{
+		sz line = self.mark.pos;
+		while ((indent < 0 || self.col() < indent) && self.peek() == ' ') self.advance();
+		if (self.peek() == '\t' && self.col() < (indent < 0 ? min_indent : indent))
+		{
+			return self.error(self.mark, "tab character where indentation is expected", INVALID_TAB)~;
+		}
+		if (self.at_end() && self.mark.pos > line) return breaks + 1;   // a blank last line
+		if (self.peek() != '\n') return breaks;
+		if (indent < 0 && self.col() > *max_empty) *max_empty = self.col();
+		self.advance();
+		breaks++;
 	}
 }

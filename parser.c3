@@ -56,8 +56,7 @@ fn bool Parser.peek_is(&self, Token t, TokenType... types)
 
 fn Event? Parser.fail(&self, Token t, String msg)
 {
-	self.scanner.error(t.start, msg)!;
-	return SYNTAX_ERROR~;
+	return self.scanner.error(t.start, msg)~;
 }
 
 // The document ends at '...', '---' or the end of the stream.
