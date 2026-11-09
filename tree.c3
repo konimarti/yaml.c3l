@@ -1,6 +1,5 @@
-// v2 contract. Card (b) owns this file. The types and the primitives below are FROZEN (cards
-// (c), (d) and the test fixtures build hand-made trees with them); (b) may add to the file.
-// The structs are public so that test modules can see them; users never touch them.
+// Internal YAML node tree. The structs are public so that test modules can see them;
+// users interact via Node and Yaml.
 module yaml;
 
 import yaml::parser;
@@ -90,8 +89,8 @@ struct Tree
 	uint ndocs;
 	Budget budget;
 	ulong hops;         // sibling links followed by navigation: lets tests prove O(n) iteration
-	uint last_doc_idx;  // cached index of last accessed stream document
-	uint last_doc_id;   // cached node id of last accessed stream document
+	uint* doc_ids;      // document root node ids for O(1) random doc(i) access
+	uint doc_ids_cap;
 	MapIndexEntry* map_indices;
 	uint map_indices_len, map_indices_cap;
 }
@@ -114,6 +113,7 @@ fn void Tree.free(&self)
 	if (self.nodes) alloc::free(a, self.nodes);
 	if (self.props) alloc::free(a, self.props);
 	if (self.weights) alloc::free(a, self.weights);
+	if (self.doc_ids) alloc::free(a, self.doc_ids);
 	if (self.map_indices)
 	{
 		for (uint i = 0; i < self.map_indices_len; i++)
@@ -153,8 +153,12 @@ fn void Tree.append_after(&self, uint parent, uint prev, uint child)
 {
 	if (parent == 0)
 	{
-		self.last_doc_idx = 0;
-		self.last_doc_id = 0;
+		if (self.ndocs == self.doc_ids_cap)
+		{
+			self.doc_ids_cap = self.doc_ids_cap ? self.doc_ids_cap * 2 : 16;
+			self.doc_ids = alloc::realloc_array(self.allocator, self.doc_ids, uint, self.doc_ids_cap).ptr;
+		}
+		self.doc_ids[self.ndocs++] = child;
 	}
 	self.nodes[child].parent = parent;
 	if (prev)
@@ -165,11 +169,7 @@ fn void Tree.append_after(&self, uint parent, uint prev, uint child)
 	{
 		self.nodes[parent].first = child;
 	}
-	if (parent == 0)
-	{
-		self.ndocs++;
-	}
-	else
+	if (parent != 0)
 	{
 		self.nodes[parent].val.len++;
 	}

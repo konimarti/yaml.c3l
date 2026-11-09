@@ -72,16 +72,16 @@ fn void hop_test_docs() @test => @pool()
 	defer y.free();
 	test::eq(y.len(), 100_000);
 
-	// Test 1: sequential doc(i) access with cache
+	// Test 1: sequential doc(i) access is O(1) (0 hops)
 	y.tree.hops = 0;
 	for (sz i = 0; i < y.len(); i++)
 	{
 		Node d = y.doc(i);
 		assert(d.exists(), "document exists");
 	}
-	assert(y.tree.hops <= 300_000, "hops <= 3*n for sequential doc(i)");
+	assert(y.tree.hops == 0, "hops == 0 for sequential doc(i)");
 
-	// Test 2: docs() cursor iteration
+	// Test 2: docs() cursor iteration is O(1) (0 hops)
 	y.tree.hops = 0;
 	sz count = 0;
 	foreach (d : y.docs())
@@ -90,7 +90,25 @@ fn void hop_test_docs() @test => @pool()
 		count++;
 	}
 	test::eq(count, 100_000);
-	assert(y.tree.hops <= 300_000, "hops <= 3*n for docs() cursor");
+	assert(y.tree.hops == 0, "hops == 0 for docs() cursor");
+
+	// Test 3: non-monotonic / random doc(i) access is O(1) (0 hops)
+	y.tree.hops = 0;
+	for (sz i = y.len(); i > 0; i--)
+	{
+		Node d = y.doc(i - 1);
+		assert(d.exists(), "document exists");
+	}
+	assert(y.tree.hops == 0, "hops == 0 for backward doc(i)");
+
+	sz idx = 0;
+	for (sz step = 0; step < 100_000; step++)
+	{
+		idx = (idx + 37997) % y.len();
+		Node d = y.doc(idx);
+		assert(d.exists(), "document exists");
+	}
+	assert(y.tree.hops == 0, "hops == 0 for random doc(i)");
 }
 
 fn void large_map_lookup_index() @test => @pool()
@@ -325,6 +343,25 @@ fn void node_properties_and_parent() @test
 
 	Node again = y["again"];
 	Node again_item0 = again.at(0);
-	// Item through alias has target collection as parent (N3)
+	// Item through alias has target collection as parent
 	test::eq(again_item0.parent().id, list.id);
+}
+
+fn void from_file_procfs_and_regular() @test
+{
+	$if env::LINUX:
+		Yaml? yp = yaml::from_file("/proc/self/status", mem, false);
+		if (try y = yp)
+		{
+			defer y.free();
+			test::eq(y.len(), 1);
+			test::eq(y.doc(0).is_map(), true);
+		}
+	$endif
+
+	// Regular file
+	Yaml y_reg = yaml::from_file("project.json", mem, false)!!;
+	defer y_reg.free();
+	test::eq(y_reg.len(), 1);
+	test::eq(y_reg["version"].as_string()!!, "0.2.0");
 }

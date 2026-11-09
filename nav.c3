@@ -1,4 +1,4 @@
-// v2 contract. Card (c) owns this file: Node, navigation, typed reads, Yaml.get/get_in/doc/len.
+// Node, navigation, typed reads, Yaml.get/get_in/doc/len.
 // Rules: `[]` / `find` never fail (they give a missing node); `get` is the checked form (NOT_FOUND).
 // Aliases are followed by every reader; shadowed (overridden duplicate) entries are skipped.
 // A missing node: exists() is false, kind() is MISSING, is_null() is false, as_* fault NOT_FOUND.
@@ -132,8 +132,6 @@ fn Entry Map.get_at(&self, sz i) @operator([])
 struct Docs
 {
 	Tree* tree;
-	uint index;
-	uint cursor;
 }
 
 fn sz Docs.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
@@ -141,54 +139,19 @@ fn sz Docs.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
 fn Node Docs.get_at(&self, sz i) @operator([])
 {
 	if (!self.tree || i >= (sz)self.tree.ndocs) return (Node){};
-	uint first = self.tree.nodes[0].first;
-	if (!first) return (Node){};
-
-	if (self.cursor == 0 || i < (sz)self.index)
-	{
-		self.cursor = first;
-		self.index = 0;
-	}
-	while ((sz)self.index < i && self.cursor != 0)
-	{
-		self.cursor = self.tree.nodes[self.cursor].next;
-		$if env::TESTING: self.tree.hops++; $endif
-		self.index++;
-	}
-	if (self.cursor == 0) return (Node){};
-	return (Node){ self.tree, self.cursor };
+	if (self.tree.doc_ids) return (Node){ self.tree, self.tree.doc_ids[i] };
+	return (Node){};
 }
 
 fn Docs Yaml.docs(&self) => (Docs){ .tree = self.tree };
 
 fn sz Yaml.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
 
-// Retrieves document `i` (0-based) from the stream.
-// Sequential forward access (doc(0), doc(1), ...) runs in amortized O(1) time due to an internal
-// cursor cache. Backwards or non-monotonic random access requires traversing from the beginning
-// or previous position in O(i) time. For linear iteration, consider using `Yaml.docs()` instead.
+// Retrieves document `i` (0-based) from the stream in O(1) time.
 fn Node Yaml.doc(&self, sz i)
 {
 	if (!self.tree || i >= (sz)self.tree.ndocs) return (Node){};
-	uint child = self.tree.nodes[0].first;
-	sz cur = 0;
-	if (self.tree.last_doc_id != 0 && i >= (sz)self.tree.last_doc_idx)
-	{
-		child = self.tree.last_doc_id;
-		cur = (sz)self.tree.last_doc_idx;
-	}
-	while (child != 0 && cur < i)
-	{
-		child = self.tree.nodes[child].next;
-		$if env::TESTING: self.tree.hops++; $endif
-		cur++;
-	}
-	if (child != 0)
-	{
-		self.tree.last_doc_idx = (uint)cur;
-		self.tree.last_doc_id = child;
-		return (Node){ self.tree, child };
-	}
+	if (self.tree.doc_ids) return (Node){ self.tree, self.tree.doc_ids[i] };
 	return (Node){};
 }
 
