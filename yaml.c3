@@ -1,4 +1,4 @@
-// v2 contract. Card (b) owns this file: the parse functions, the builder entry and free.
+// The main entry point: parse functions, builder entry and resource cleanup.
 module yaml;
 
 import std::math;
@@ -14,7 +14,7 @@ struct Yaml (Printable)
 	Tree* tree;
 }
 
-// Compact JSON, one document per line (json.c3, card (c)).
+// Compact JSON, one document per line (json.c3).
 fn sz? Yaml.to_format(&self, Formatter* f) @dynamic => write_yaml_json(f, self);
 
 fn void Yaml.free(&self)
@@ -71,12 +71,26 @@ fn Yaml? from_file(String filename, Allocator allocator = mem, bool verbose = tr
 	File f = io::file::open(filename, "rb")!;
 	defer (void)f.close();
 	long? fsz = f.size();
-	if (try size = fsz && size >= 0)
+	if (try size = fsz && size > 0)
 	{
 		char[] buf = alloc::alloc_array(allocator, char, (sz)size);
-		defer catch alloc::free(allocator, buf);
-		sz read = f.read(buf)!;
-		return parse_buffer(buf[:read], true, allocator, verbose);
+		sz total = 0;
+		while (total < (sz)size)
+		{
+			sz? r = f.read(buf[total..]);
+			if (catch err = r)
+			{
+				alloc::free(allocator, buf);
+				return (err == io::EOF) ? io::UNEXPECTED_EOF~ : err~;
+			}
+			if (r == 0)
+			{
+				alloc::free(allocator, buf);
+				return io::UNEXPECTED_EOF~;
+			}
+			total += r;
+		}
+		return parse_buffer(buf, true, allocator, verbose);
 	}
 	return from_stream(&f, allocator, verbose);
 }
