@@ -187,10 +187,7 @@ fn Event? Parser.next(&self)
 			self.scanner.report_error(self.scanner.mark, "No more events after STREAM_END");
 			return parser::SYNTAX_ERROR~;
 	}
-	
-	// Should not reach here
-	self.scanner.report_error(self.scanner.mark, "Unexpected state");
-	return parser::SYNTAX_ERROR~;
+	// All states are handled, no code after switch is reachable
 }
 
 fn Token? Parser.get_token(&self)
