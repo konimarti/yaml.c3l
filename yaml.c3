@@ -48,15 +48,14 @@ fn sz? write_json(Formatter* f, Object* o)
 			return n + f.print("]")!;
 		default:
 			sz n = f.print("{")!;
-			if (o.type != void)
+			bool first = true;
+			o.@each_entry(; String key, Object* value)
 			{
-				foreach (i, key : o.map.keys(tmem))
-				{
-					if (i) n += f.print(",")!;
-					n += write_string(f, key)! + f.print(":")!;
-					n += write_json(f, o.get(key)!)!;
-				}
-			}
+				if (!first) n += f.print(",")!;
+				first = false;
+				n += write_string(f, key)! + f.print(":")!;
+				n += write_json(f, value)!;
+			};
 			return n + f.print("}")!;
 	}
 }

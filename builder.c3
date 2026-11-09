@@ -122,12 +122,11 @@ fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 	}
 	Object* map = object::new_obj(a);
 	defer catch map.free();
-	if (o.type == void) return map;   // empty map
-	foreach (key : o.map.keys(tmem))
+	o.@each_entry(; String key, Object* value)
 	{
 		if ((self.alias_bytes += key.len) > parser::MAX_ALIAS_BYTES) return parser::LIMIT_EXCEEDED~;
-		map.set(key, self.clone(o.get(key)!, a, depth + 1)!);
-	}
+		map.set(key, self.clone(value, a, depth + 1)!);
+	};
 	return map;
 }
 
