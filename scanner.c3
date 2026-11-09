@@ -112,13 +112,18 @@ fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 {
 	if (self.verbose)
 	{
+		// the line around the error, at most EXCERPT bytes on each side and not inside a
+		// UTF-8 character: a long line cannot flood stderr
+		const sz EXCERPT = 60;
 		sz start = m.pos;
-		while (start > 0 && self.s[start - 1] != '\n') start--;
+		while (start > 0 && m.pos - start < EXCERPT && self.s[start - 1] != '\n') start--;
+		while (start < m.pos && conv::is_cont(self.s[start])) start++;
 		sz end = m.pos;
-		while (end < self.s.len && self.s[end] != '\n') end++;
+		while (end < self.s.len && end - m.pos < EXCERPT && self.s[end] != '\n') end++;
+		while (end > m.pos && end < self.s.len && conv::is_cont(self.s[end])) end--;
 		(void)io::eprintfn("YAML ERROR -- Line %d, Col %d: %s", m.line, m.column, msg);
 		(void)io::eprintn(self.s[start:end - start]);
-		(void)io::eprintfn("%*s^", m.column - 1, "");
+		(void)io::eprintfn("%*s^", (int)conv::utf8_codepoints(self.s[start:m.pos - start]), "");
 	}
 	return f;
 }

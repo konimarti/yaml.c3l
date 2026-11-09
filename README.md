@@ -67,8 +67,8 @@ Aliases are deep copies of the anchored node. Duplicate keys keep the last value
 
 ### Error handling
 
-When a parsing error occurs, the line, column, message, the source line and a caret are
-printed to `stderr`, and the function returns a fault (for example
+When a parsing error occurs, the line, column (in bytes), message, the source line (at most
+60 bytes on each side of the error) and a caret are printed to `stderr`, and the function returns a fault (for example
 `parser::INVALID_ESCAPE`):
 
 ```sh

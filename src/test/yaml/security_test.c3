@@ -2,7 +2,7 @@
 module yaml::security_test;
 
 import std::io, std::time;
-import yaml, yaml::parser, yaml::test_util;
+import yaml, yaml::parser, yaml::test_util, yaml::api_test;
 
 // S4: the scanner limits flow nesting, so the event API is bounded too (before: '{' x 40 000
 // was tokenized completely, in seconds, before the builder saw depth 513)
@@ -84,4 +84,32 @@ fn void alias_bytes_limit() @test => @pool()
 	for (int i = 0; i < 100; i++) s.append("*a, ");
 	s.append("]\n");
 	test::@error(yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
+}
+
+// S5: the error report shows at most 60 bytes on each side of the error, not inside a UTF-8
+// character, and the caret counts characters (before: the whole line, 40 MB for a 20 MB line)
+fn void error_excerpt() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("k: \"");
+	s.append_repeat('a', 100_000);
+	s.append("\\q\"\n");
+	DString want = dstring::temp();
+	want.append("YAML ERROR -- Line 1, Col 100005: invalid escape sequence\n");
+	want.append_repeat('a', 60);
+	want.append("\\q\"\n");
+	want.append_repeat(' ', 60);
+	want.append("^\n");
+	test::eq(api_test::stderr_of(s.str_view(), true), want.str_view());
+	s.clear();
+	s.append("k: \"");
+	for (int i = 0; i < 100; i++) s.append("é");
+	s.append("\\q\"\n");
+	want.clear();
+	want.append("YAML ERROR -- Line 1, Col 205: invalid escape sequence\n");
+	for (int i = 0; i < 30; i++) want.append("é");
+	want.append("\\q\"\n");
+	want.append_repeat(' ', 30);
+	want.append("^\n");
+	test::eq(api_test::stderr_of(s.str_view(), true), want.str_view());
 }
