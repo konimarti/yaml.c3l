@@ -80,8 +80,8 @@ compact JSON text (`["a","b"]`).
 ### Error handling
 
 When a parsing error occurs, the line, column (in bytes), message, the source line (at most
-60 bytes on each side of the error) and a caret are printed to `stderr`, and the function returns a fault (for example
-`parser::INVALID_ESCAPE`):
+60 bytes on each side of the error, control characters shown as `?`) and a caret are printed
+to `stderr`, and the function returns a fault (for example `parser::INVALID_ESCAPE`):
 
 ```sh
 $ printf 'a: "x\\q"\n' | build/yamlv
@@ -117,8 +117,9 @@ c3c build yamlv
 
 * `build/yamlv < file.yaml`: validates the input. It prints `YAML is valid.` to `stderr`, or
   the error, and exits with code 0 or 1.
-* `build/yamlv -e < file.yaml`: prints the event stream in yaml-test-suite format (all events
-  before an error too).
+* `build/yamlv -e < file.yaml`: prints the event stream in yaml-test-suite format. On a
+  syntax error, the events before it are printed too. The input is checked for invalid
+  characters first, so such an error prints no events.
 * `build/yamlv -j < file.yaml`: prints every document as one line of JSON.
 
 ```sh
