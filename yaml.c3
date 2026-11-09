@@ -100,21 +100,21 @@ fn sz? write_string(Formatter* f, String s) @private
 // The parser emits exactly one node (maybe an empty scalar) per document.
 fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = true) => @pool()
 {
-	Parser p;
-	p.init(s, verbose);
+	Parser parser;
+	parser.init(s, verbose);
 	YamlData data = { .allocator = allocator };
 	data.docs.init(allocator);
 	defer catch data.free();
 	while (true)
 	{
-		Event ev = p.next()!;
+		Event ev = parser.next()!;
 		switch (ev.type)
 		{
 			case STREAM_END: return data;
 			case SCALAR:
 			case SEQUENCE_START:
 			case MAPPING_START:
-			case ALIAS: data.docs.push(build_document(&p, ev, allocator)!);
+			case ALIAS: data.docs.push(build_document(&parser, ev, allocator)!);
 			default: break;
 		}
 	}

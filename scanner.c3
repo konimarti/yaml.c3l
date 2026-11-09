@@ -237,9 +237,9 @@ fn void? Scanner.fetch_next_token(&self)
 	}
 	if (self.at_end()) return self.fetch_stream_end();
 	char c = self.peek();
-	char n = self.peek(1);
+	char next = self.peek(1);
 	bool flow = self.flow_level > 0;
-	bool ends_indicator = is_blankz(n) || (flow && is_flow_indicator(n));   // "- ", "? ", ": " (flow: "-,")
+	bool ends_indicator = is_blankz(next) || (flow && is_flow_indicator(next));   // "- ", "? ", ": " (flow: "-,")
 	if (c == '[' || c == '{') return self.fetch_flow_start(c == '[' ? T_FLOW_SEQUENCE_START : T_FLOW_MAPPING_START);
 	if (c == ']' || c == '}') return self.fetch_flow_end(c == ']' ? T_FLOW_SEQUENCE_END : T_FLOW_MAPPING_END);
 	if (c == ',') return self.fetch_flow_entry();
@@ -562,24 +562,24 @@ fn String Scanner.scan_plain(&self)
 		}
 		if (self.peek() != '\n') return buf ? buf.str_view() : first;
 		// look ahead over line breaks and blank lines to the next text
-		sz i = self.mark.pos;
+		sz text = self.mark.pos;
 		sz line_start;
-		int n = 0;
-		while (i < self.s.len && (self.s[i] == '\n' || self.s[i].is_blank()))
+		int text_breaks = 0;
+		while (text < self.s.len && (self.s[text] == '\n' || self.s[text].is_blank()))
 		{
-			if (self.s[i] == '\n')
+			if (self.s[text] == '\n')
 			{
-				n++;
-				line_start = i + 1;
+				text_breaks++;
+				line_start = text + 1;
 			}
-			i++;
+			text++;
 		}
-		if (i >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[i] == '#' || self.is_marker(line_start))
+		if (text >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[text] == '#' || self.is_marker(line_start))
 		{
 			return buf ? buf.str_view() : first;
 		}
-		while (self.mark.pos < i) self.advance();
-		breaks = n;
+		while (self.mark.pos < text) self.advance();
+		breaks = text_breaks;
 	}
 }
 

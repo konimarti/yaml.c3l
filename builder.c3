@@ -50,9 +50,9 @@ fn Object*? Builder.node(&self, Event e)
 			o = object::new_array(self.allocator);
 			while (true)
 			{
-				Event n = self.parser.next()!;
-				if (n.type == SEQUENCE_END) break;
-				o.push_object(self.node(n)!);
+				Event item = self.parser.next()!;
+				if (item.type == SEQUENCE_END) break;
+				o.push_object(self.node(item)!);
 			}
 			self.depth--;
 		case MAPPING_START:
@@ -60,9 +60,9 @@ fn Object*? Builder.node(&self, Event e)
 			o = object::new_obj(self.allocator);
 			while (true)
 			{
-				Event k = self.parser.next()!;
-				if (k.type == MAPPING_END) break;
-				String key = self.key(k)!;
+				Event key_event = self.parser.next()!;
+				if (key_event.type == MAPPING_END) break;
+				String key = self.key(key_event)!;
 				Object* value = self.node(self.parser.next()!)!;
 				if (o.has_key(key))   // duplicate keys: last wins; keep the old value for aliases
 				{
