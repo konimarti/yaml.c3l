@@ -113,3 +113,20 @@ fn void error_excerpt() @test => @pool()
 	want.append("^\n");
 	test::eq(api_test::stderr_of(s.str_view(), true), want.str_view());
 }
+
+// S6: %TAG handles are looked up in a map (before: a list, O(n) per directive and per tag;
+// 40 000 directives with as many tags took seconds)
+fn void many_tag_directives() @test => @pool()
+{
+	DString s = dstring::temp();
+	for (int i = 0; i < 40_000; i++) s.appendf("%%TAG !h%d! tag:x,%d:\n", i, i);
+	s.append("--- [");
+	for (int i = 0; i < 40_000; i++) s.appendf("!h%d!v x, ", i);
+	s.append("]\n...\n%TAG !h1! tag:y:\n--- !h1!v x\n");
+	Clock start = clock::now();
+	String events = test_util::events(s.str_view())!!;
+	assert(start.to_now() < (NanoDuration)300_000_000, "directives must be linear");
+	assert(events.contains("=VAL <tag:x,39999:v> :x"));
+	assert(events.ends_with("=VAL <tag:y:v> :x\n-DOC\n-STR"), "the handles are reset per document");
+	test::@error(test_util::events("%TAG !a! x\n%TAG !a! y\n--- a\n"), parser::INVALID_DIRECTIVE);
+}

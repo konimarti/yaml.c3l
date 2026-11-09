@@ -1,6 +1,6 @@
 // Parser: tokens -> events (libyaml-style state machine with a state stack).
 module yaml::parser;
-import std::collections::list;
+import std::collections::list, std::collections::map;
 
 enum State : char
 {
@@ -12,14 +12,12 @@ enum State : char
 	FLOW_MAPPING_FIRST_KEY, FLOW_MAPPING_KEY, FLOW_MAPPING_VALUE, FLOW_MAPPING_EMPTY_VALUE, END
 }
 
-struct TagDirective { String handle; String prefix; }
-
 struct Parser
 {
 	Scanner scanner;
 	State state;
 	List {State} states;   // where to continue after the current node
-	List {TagDirective} tag_directives;   // %TAG handles of the current document
+	HashMap {String, String} tag_directives;   // %TAG handle -> prefix in the current document
 }
 
 fn Parser* Parser.init(&self, String input, bool verbose = true)
@@ -139,11 +137,8 @@ fn Token? Parser.directives(&self)
 		}
 		else if (t.type == T_TAG_DIRECTIVE)
 		{
-			foreach (d : self.tag_directives)
-			{
-				if (d.handle == t.handle) return self.err(t, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
-			}
-			self.tag_directives.push({ t.handle, t.value });
+			if (self.tag_directives.has_key(t.handle)) return self.err(t, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
+			self.tag_directives.set(t.handle, t.value);
 		}
 		self.scanner.next_token()!;
 		t = self.scanner.peek_token()!;
@@ -156,7 +151,8 @@ fn String? Parser.resolve_tag(&self, Token t)
 {
 	if (!t.handle.len) return t.value;   // verbatim
 	if (t.handle == "!" && !t.value.len) return "!";
-	foreach (d : self.tag_directives) if (d.handle == t.handle) return d.prefix.tconcat(t.value);
+	String? prefix = self.tag_directives.get(t.handle);
+	if (try prefix) return prefix.tconcat(t.value);
 	if (t.handle == "!") return "!".tconcat(t.value);
 	if (t.handle == "!!") return "tag:yaml.org,2002:".tconcat(t.value);
 	return self.err(t, "undefined tag handle", UNDEFINED_TAG_HANDLE)~;
@@ -179,7 +175,11 @@ fn Event? Parser.document_end(&self)
 	bool explicit = t.type == T_DOCUMENT_END;
 	if (explicit) self.scanner.next_token()!;
 	self.state = explicit ? IMPLICIT_DOCUMENT_START : DOCUMENT_START;
-	self.tag_directives.clear();
+	if (self.tag_directives.len())   // a new map: clear() walks the whole table, which never shrinks
+	{
+		self.tag_directives = {};
+		self.tag_directives.tinit();
+	}
 	return { .type = DOCUMENT_END, .explicit = explicit, .start = t.start };
 }
 
