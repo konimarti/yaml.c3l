@@ -1,0 +1,10 @@
+build/
+test-suite/
+ref/
+TASK.md
+report.md
+done
+failed
+DESIGN.md
+milestones/
+review/
