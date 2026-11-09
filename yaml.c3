@@ -37,6 +37,32 @@ fn Object*? build_node(Parser* p, Event e, Allocator a)
 	switch (e.type)
 	{
 		case SCALAR: return object::new_string(a, e.value);
+		case SEQUENCE_START:
+			Object* seq = object::new_array(a);
+			defer catch seq.free();
+			while (true)
+			{
+				Event n = p.next()!;
+				if (n.type == SEQUENCE_END) return seq;
+				seq.push_object(build_node(p, n, a)!);
+			}
+		case MAPPING_START:
+			Object* map = object::new_obj(a);
+			defer catch map.free();
+			while (true)
+			{
+				Event key_ev = p.next()!;
+				if (key_ev.type == MAPPING_END) return map;
+				if (key_ev.type != SCALAR) return parser::SYNTAX_ERROR~;
+				Event val_ev = p.next()!;
+				if (val_ev.type == MAPPING_END)
+				{
+					map.set(key_ev.value, object::new_null());
+					return map;
+				}
+				Object* val = build_node(p, val_ev, a)!;
+				map.set(key_ev.value, val);
+			}
 		default: return parser::SYNTAX_ERROR~;
 	}
 }
@@ -57,7 +83,6 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 		Event? ev = p.next();
 		if (catch err = ev)
 		{
-			// Free partial results on error
 			defer catch data.free();
 			return err~;
 		}
@@ -65,42 +90,31 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 		switch (ev.type)
 		{
 			case STREAM_START: break;
-			case STREAM_END: return data;
+			case STREAM_END:
+				if (current_doc != null) data.docs.push(current_doc);
+				return data;
 			case DOCUMENT_START:
 				if (ev.explicit)
 				{
-					// Explicit document start
-					current_doc = null;
-				}
-				else
-				{
-					// Implicit document start - will be created when we see content
+					if (current_doc != null)
+					{
+						data.docs.push(current_doc);
+						current_doc = null;
+					}
 				}
 				break;
 			case DOCUMENT_END:
-				if (current_doc == null)
-				{
-					// Empty document
-					current_doc = object::new_null();
-					data.docs.push(current_doc);
-				}
+				if (current_doc == null) current_doc = object::new_null();
+				data.docs.push(current_doc);
 				current_doc = null;
 				break;
 			case SCALAR:
-				if (current_doc == null)
-				{
-					current_doc = object::new_null();
-					data.docs.push(current_doc);
-				}
-				Object* val = build_node(&p, ev, allocator)!!;
-				current_doc.free();
-				current_doc = val;
-				data.docs[data.docs.size - 1] = val;
+			case SEQUENCE_START:
+			case MAPPING_START:
+				if (current_doc != null) current_doc.free();
+				current_doc = build_node(&p, ev, allocator)!!;
 				break;
-			default:
-				// Free partial results
-				defer catch data.free();
-				return parser::SYNTAX_ERROR~;
+			default: defer catch data.free(); return parser::SYNTAX_ERROR~;
 		}
 	}
 }
@@ -139,9 +153,6 @@ fn sz YamlData.len(&self) @operator(len)
 
 fn void YamlData.free(&self)
 {
-	foreach (obj : self.docs)
-	{
-		obj.free();
-	}
+	foreach (obj : self.docs) obj.free();
 	self.docs.free();
 }

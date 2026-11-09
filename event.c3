@@ -17,16 +17,6 @@ enum EventType : char { STREAM_START, STREAM_END, DOCUMENT_START, DOCUMENT_END,
 
 enum ScalarStyle : char { PLAIN, SINGLE, DOUBLE, LITERAL, FOLDED }
 
-enum TokenType : char { T_STREAM_START, T_STREAM_END, T_DOCUMENT_START, T_DOCUMENT_END, T_SCALAR }
-
-struct Token
-{
-	TokenType type;
-	Mark start;
-	String value;
-	ScalarStyle style;
-}
-
 struct Event (Printable)
 {
 	EventType type;
