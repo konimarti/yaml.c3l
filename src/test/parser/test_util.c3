@@ -42,6 +42,7 @@ fn String? scalar(String yaml)
 fn String stderr_of(String yaml, bool verbose, fault* f = null)
 {
 	CFile tmp = libc::tmpfile();
+	assert(tmp, "tmpfile() failed");
 	defer libc::fclose(tmp);
 	File saved = *io::stderr();
 	*io::stderr() = file::from_handle(tmp);
