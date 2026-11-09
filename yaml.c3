@@ -61,7 +61,8 @@ fn sz? write_json(Formatter* f, Object* o)
 	}
 }
 
-// The shortest of %.15g, %.16g, %.17g that reads back as the same double; no JSON for inf/nan.
+// The shortest of %.15g, %.16g, %.17g that reads back as the same double, with a '.' or an
+// exponent; no JSON for inf/nan.
 fn sz? write_float(Formatter* f, double d)
 {
 	if (d != d || d == double::inf || d == -double::inf) return f.print("null");
@@ -72,7 +73,8 @@ fn sz? write_float(Formatter* f, double d)
 		double? back = s.to_double();   // fails when rounding goes past DBL_MAX; %.17g always reads back
 		if (try back && back == d) break;
 	}
-	return f.print(s);
+	if (s.contains_char('.') || s.contains_char('e')) return f.print(s);
+	return f.print(s)! + f.print(".0")!;   // stays a float: "1" would read back as an int
 }
 
 // RFC 8259 string escapes.

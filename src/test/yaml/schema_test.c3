@@ -18,7 +18,7 @@ fn void core_ints() @test => @pool()
 
 fn void core_floats() @test => @pool()
 {
-	test::eq(json("[1e3, .5, 1., -2.5E-1, 0.1]")!!, "[1000,0.5,1,-0.25,0.1]\n");
+	test::eq(json("[1e3, .5, 1., -2.5E-1, 0.1]")!!, "[1000.0,0.5,1.0,-0.25,0.1]\n");
 	YamlData data = yaml::from_string("[-.Inf, .inf, .nan, .NaN]", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("0")!!.f, -double::inf);
@@ -45,7 +45,7 @@ fn void not_resolved() @test => @pool()
 
 fn void forced_types() @test => @pool()
 {
-	test::eq(json(`[!!float 1, !!int "7", !!null "", !!bool "true", !!str ~]`)!!, "[1,7,null,true,\"~\"]\n");
+	test::eq(json(`[!!float 1, !!int "7", !!null "", !!bool "true", !!str ~]`)!!, "[1.0,7,null,true,\"~\"]\n");
 	YamlData data = yaml::from_string("!!float 1", mem, false)!!;
 	defer data.free();
 	assert(data.get("")!!.is_float());

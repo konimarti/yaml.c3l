@@ -132,7 +132,8 @@ $ printf 'a: &x [1, 2.5]\nb: *x\nc: !!str 3\n' | build/yamlv -j
 {"b":[1,2.5],"c":"3","a":[1,2.5]}
 ```
 
-JSON keys follow the internal hash map order.
+JSON keys follow the internal hash map order. A float keeps its type: `1.0` and `1e3` are
+printed as `1.0` and `1000.0`. `.inf` and `.nan` have no JSON form and are printed as `null`.
 
 ### Installation
 
