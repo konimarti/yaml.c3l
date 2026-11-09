@@ -1,10 +1,10 @@
-// Regression test for the token queue (re-review N2). In module yaml::parser to see the
+// Regression test for the token queue. In module yaml::parser to see the
 // scanner, which is @private.
 module yaml::parser;
 
 import yaml::test_util;
 
-// N2: a simple key found late is marked on its queued token, not inserted in front of it: an
+// A simple key found late is marked on its queued token, not inserted in front of it: an
 // insert into a queue that holds a whole collection key is a memmove of the queue (before:
 // 500 nested keys around 1 M entries took 4.3 s)
 fn void key_is_not_inserted() @test => @pool()
@@ -24,7 +24,7 @@ fn void key_is_not_inserted() @test => @pool()
 		"+MAP +SEQ [] =VAL :a -SEQ =VAL :x =VAL :k +MAP {} +SEQ [] =VAL :b -SEQ =VAL :y -MAP -MAP");
 }
 
-// S3: next_token moves a head index instead of List.pop_first, a memmove of the whole queue
+// next_token moves a head index instead of List.pop_first, a memmove of the whole queue
 // (before: a 600 KB flow-map key, valid YAML, took a minute)
 fn void next_token_does_not_shift_the_queue() @test => @pool()
 {

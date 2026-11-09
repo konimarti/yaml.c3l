@@ -1,10 +1,10 @@
-// Regression tests for the JSON output and the path lookup (review items L3, L4).
+// Regression tests for the JSON output and the path lookup.
 module yaml::output_test;
 
 import std::io;
 import yaml;
 
-// L3: a float stays a float in JSON (before: 1.0, 5. and 1e3 were printed as 1, 5 and 1000)
+// A float stays a float in JSON (before: 1.0, 5. and 1e3 were printed as 1, 5 and 1000)
 fn void json_keeps_floats() @test => @pool()
 {
 	YamlData data = yaml::from_string("[1.0, 5., 1e3, !!float 2, 1.5, 1e300, 1e-7, -0.0, 12]", mem, false)!!;
@@ -12,7 +12,7 @@ fn void json_keeps_floats() @test => @pool()
 	test::eq(string::tformat("%s", data), "[1.0,5.0,1000.0,2.0,1.5,1e+300,1e-07,-0.0,12]\n");
 }
 
-// L4: empty path segments and array indexes with a leading zero are NOT_FOUND (before: "a."
+// Empty path segments and array indexes with a leading zero are NOT_FOUND (before: "a."
 // returned the value of the key "" or of the null key, and "a.b.01" was index 1)
 fn void path_segments() @test => @pool()
 {

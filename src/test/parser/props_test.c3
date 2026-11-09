@@ -66,7 +66,7 @@ fn void double_property() @test => @pool()
 	test::@error(test_util::events("&a *b", " ", false), parser::SYNTAX_ERROR);
 }
 
-// M5 review item 1: reserved directives follow the same document rules as %YAML and %TAG
+// Reserved directives follow the same document rules as %YAML and %TAG
 fn void reserved_directive() @test => @pool()
 {
 	test::eq(test_util::events("%FOO bar\n--- a\n", " ", false)!!, "+DOC --- =VAL :a -DOC");
@@ -76,14 +76,14 @@ fn void reserved_directive() @test => @pool()
 	test::@error(test_util::events("a\n...\n%FOO\nb\n", " ", false), parser::SYNTAX_ERROR);
 }
 
-// M5 review item 2: only YAML 1.x is accepted
+// Only YAML 1.x is accepted
 fn void yaml_major_version() @test => @pool()
 {
 	test::eq(test_util::events("%YAML 1.3\n--- a\n", " ", false)!!, "+DOC --- =VAL :a -DOC");
 	test::@error(test_util::events("%YAML 2.0\n--- a\n", " ", false), parser::INVALID_DIRECTIVE);
 }
 
-// M5 review item 3: a %TAG prefix is a URI ('%XX' decoded) that does not start with a flow indicator
+// A %TAG prefix is a URI ('%XX' decoded) that does not start with a flow indicator
 fn void tag_prefix_uri() @test => @pool()
 {
 	test::eq(test_util::events("%TAG !e! tag:a%21/\n--- !e!x a\n", " ", false)!!, "+DOC --- =VAL <tag:a!/x> :a -DOC");
@@ -92,7 +92,7 @@ fn void tag_prefix_uri() @test => @pool()
 	test::@error(test_util::events("%TAG !e! {x}\n--- !e!y a\n", " ", false), parser::INVALID_DIRECTIVE);
 }
 
-// M6 review item 4: an escaped flow indicator may start a %TAG prefix
+// An escaped flow indicator may start a %TAG prefix
 fn void tag_prefix_escaped_first_char() @test => @pool()
 {
 	test::eq(test_util::events("%TAG !e! %2Cx\n--- !e!y a\n", " ", false)!!, "+DOC --- =VAL <,xy> :a -DOC");

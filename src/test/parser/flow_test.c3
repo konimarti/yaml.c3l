@@ -61,7 +61,7 @@ fn void unclosed_flow() @test => @pool()
 	test::@error(test_util::events("[a]]", " ", false, false), parser::SYNTAX_ERROR);
 }
 
-// M3/M4 review item 2: keys directly in a flow mapping have no 1024-character limit
+// Keys directly in a flow mapping have no 1024-character limit
 fn void long_flow_map_key() @test => @pool()
 {
 	DString k = dstring::temp();

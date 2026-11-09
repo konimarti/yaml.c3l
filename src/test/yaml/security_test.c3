@@ -1,10 +1,10 @@
-// Regression tests for the size and time limits on untrusted input (review items S1-S7).
+// Regression tests for the size and time limits on untrusted input.
 module yaml::security_test;
 
 import std::io;
 import yaml, yaml::parser, yaml::test_util;
 
-// S4: the scanner limits flow nesting, so the event API is bounded too (before: '{' x 40 000
+// The scanner limits flow nesting, so the event API is bounded too (before: '{' x 40 000
 // was tokenized completely, in seconds, before the builder saw depth 513)
 fn void flow_depth_limit() @test => @pool()
 {
@@ -19,7 +19,7 @@ fn void flow_depth_limit() @test => @pool()
 	test::@error(yaml::from_string(deep.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 }
 
-// S1: a collection key is its JSON text, and a nested one is escaped again at every level
+// A collection key is its JSON text, and a nested one is escaped again at every level
 // (before: 64 bytes of '{' needed 2.6 GB and ended in an uncatchable OUT_OF_MEMORY panic)
 fn void nested_collection_keys() @test => @pool()
 {
@@ -44,7 +44,7 @@ fn void nested_collection_keys() @test => @pool()
 	test::eq(data.get(`["a",{"b":"c"}]`)!!.i, 1);
 }
 
-// S2: alias expansion counts the copied bytes, not only the nodes (before: 1 MB of input with
+// Alias expansion counts the copied bytes, not only the nodes (before: 1 MB of input with
 // 2 000 aliases of a 1 MB string needed 2 GB)
 fn void alias_bytes_limit() @test => @pool()
 {
@@ -67,7 +67,7 @@ fn void alias_bytes_limit() @test => @pool()
 	test::@error(yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
 }
 
-// S5: the error report shows at most 60 bytes on each side of the error, not inside a UTF-8
+// The error report shows at most 60 bytes on each side of the error, not inside a UTF-8
 // character, and the caret counts characters (before: the whole line, 40 MB for a 20 MB line)
 fn void error_excerpt() @test => @pool()
 {
@@ -95,7 +95,7 @@ fn void error_excerpt() @test => @pool()
 	test::eq(test_util::stderr_of(s.str_view(), true), want.str_view());
 }
 
-// S6: %TAG handles are looked up in a map (before: a list, O(n) per directive and per tag;
+// %TAG handles are looked up in a map (before: a list, O(n) per directive and per tag;
 // 40 000 directives with as many tags took seconds)
 fn void many_tag_directives() @test => @pool()
 {
@@ -110,7 +110,7 @@ fn void many_tag_directives() @test => @pool()
 	test::@error(test_util::events("%TAG !a! x\n%TAG !a! y\n--- a\n"), parser::INVALID_DIRECTIVE);
 }
 
-// S7: a byte order mark at the start is skipped; only printable characters in valid UTF-8 may
+// A byte order mark at the start is skipped; only printable characters in valid UTF-8 may
 // appear (before: the BOM became part of the first key, NUL was a blank, bad UTF-8 was copied)
 fn void input_validation() @test => @pool()
 {
@@ -128,7 +128,7 @@ fn void input_validation() @test => @pool()
 	test::eq(test_util::scalar(`"\0"`)!!, "\0");
 }
 
-// P1: a single-line plain scalar is a slice of the input, not a tmem copy (before: every
+// A single-line plain scalar is a slice of the input, not a tmem copy (before: every
 // scalar was copied, 641 MB RSS for a 34 MB file)
 fn void plain_scalar_is_not_copied() @test => @pool()
 {
@@ -148,7 +148,7 @@ fn void plain_scalar_is_not_copied() @test => @pool()
 	test::eq(values[3], "multi line");
 }
 
-// N1: the alias and key budgets cover all documents of a from_* call, because YamlData keeps
+// The alias and key budgets cover all documents of a from_* call, because YamlData keeps
 // them all (before: 20 documents that each stayed below the limits needed 2 GB)
 fn void limits_cover_the_stream() @test => @pool()
 {
@@ -190,7 +190,7 @@ fn void limits_cover_the_stream() @test => @pool()
 	data.free();
 }
 
-// N5: the key text budget grows with the input, so a large valid file with many collection
+// The key text budget grows with the input, so a large valid file with many collection
 // keys passes (before: a fixed 4 MiB rejected this 1.7 MB file at line 54 616)
 fn void many_valid_collection_keys() @test => @pool()
 {
@@ -201,7 +201,7 @@ fn void many_valid_collection_keys() @test => @pool()
 	test::eq(data.get("")!!.map.len(), 60_000);
 }
 
-// N3: the excerpt shows control characters and invalid UTF-8 as '?', so a rejected input
+// The excerpt shows control characters and invalid UTF-8 as '?', so a rejected input
 // cannot send escape sequences to the terminal (before: ESC and BEL were echoed)
 fn void excerpt_has_no_control_characters() @test => @pool()
 {
@@ -211,7 +211,7 @@ fn void excerpt_has_no_control_characters() @test => @pool()
 		"YAML ERROR -- Line 1, Col 5: invalid UTF-8 or a non-printable character\né: ?? q\n   ^\n");
 }
 
-// N4: a byte order mark may start any document, not only the stream (before: the BOM
+// A byte order mark may start any document, not only the stream (before: the BOM
 // swallowed the '---' of the second document, which became the scalar "\ufeff--- b")
 fn void bom_before_a_document() @test => @pool()
 {

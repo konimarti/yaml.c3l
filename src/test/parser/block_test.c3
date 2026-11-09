@@ -48,8 +48,6 @@ fn void missing_colon() @test => @pool()
 	test::@error(test_util::events("top:\n  a: 1\nbad\n"), parser::MISSING_COLON);
 }
 
-// M2 review fixes
-
 fn void from_string_nested_error() @test => @pool()
 {
 	test::@error(yaml::from_string("- a\nfoo\n", mem, false), parser::MISSING_COLON);
@@ -88,7 +86,7 @@ fn void error_line_after_blank_lines() @test => @pool()
 	}
 }
 
-// M3/M4 review item 1: a TAB is not indentation, so a TAB-indented line does not continue a plain scalar
+// A TAB is not indentation, so a TAB-indented line does not continue a plain scalar
 fn void tab_is_not_indentation() @test => @pool()
 {
 	test::@error(test_util::events("k: a\n\tb\n"), parser::SYNTAX_ERROR);

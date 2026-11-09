@@ -130,7 +130,7 @@ fn void deep_alias_limit() @test => @pool()
 	test::@error(yaml::from_string(s.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 }
 
-// M6 review item 1: anchored nodes are not copied, so nested anchors stay linear in the input
+// Anchored nodes are not copied, so nested anchors stay linear in the input
 // (before: one copy per enclosing anchor, about 3 million nodes and seconds for this input)
 fn void nested_anchors_are_not_copied() @test => @pool()
 {
@@ -147,7 +147,7 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 	test::eq(data.get(path.str_view())!!.s, "x");
 }
 
-// M6 review item 1: an anchored key and an anchored replaced value can still be aliased
+// An anchored key and an anchored replaced value can still be aliased
 fn void anchors_outside_the_tree() @test => @pool()
 {
 	YamlData data = yaml::from_string("&k a: 1\nb: *k\nc: &v [1]\nc: 2\nd: *v\n", mem, false)!!;
@@ -157,7 +157,7 @@ fn void anchors_outside_the_tree() @test => @pool()
 	test::eq(data.get("d.0")!!.i, 1);
 }
 
-// M6 review item 5: an array index is plain digits
+// An array index is plain digits
 fn void index_segments() @test => @pool()
 {
 	YamlData data = yaml::from_string("a: [x, y, z]\n", mem, false)!!;
