@@ -1,6 +1,6 @@
 module yaml;
 
-import std::collections::map, std::collections::object;
+import std::collections::map, std::collections::list, std::collections::object;
 import yaml::parser;
 
 const sz MAX_ALIAS_NODES = 1_000_000;   // nodes created by alias expansion per document
@@ -19,13 +19,16 @@ struct Builder
 	Allocator a;
 	sz alias_nodes;
 	int depth;
-	HashMap {String, Object*} anchors;   // tmem copies of the anchored nodes
+	HashMap {String, Object*} anchors;   // the anchored nodes (owned by the tree or by `dropped`)
+	List {Object*} dropped;              // nodes taken out of the tree: replaced values and key nodes
 }
 
 fn Object*? build_document(Parser* p, Event root, Allocator a)
 {
 	Builder b = { .p = p, .a = a };
 	b.anchors.tinit();
+	b.dropped.tinit();
+	defer foreach (o : b.dropped) o.free();   // anchors may point into them until the end
 	return b.node(root);
 }
 
@@ -40,7 +43,7 @@ fn Object*? Builder.node(&self, Event e)
 		case ALIAS:
 			Object*? anchored = self.anchors.get(e.anchor);
 			if (catch anchored) return self.error(e.start, "undefined alias", UNDEFINED_ALIAS)~;
-			Object*? copy = self.clone(anchored, self.a, true, self.depth);
+			Object*? copy = self.clone(anchored, self.a, self.depth);
 			if (catch copy) return self.error(e.start, "alias expansion or nesting limit exceeded", LIMIT_EXCEEDED)~;
 			return copy;
 		case SCALAR:
@@ -63,32 +66,40 @@ fn Object*? Builder.node(&self, Event e)
 				Event k = self.p.next()!;
 				if (k.type == MAPPING_END) break;
 				String key = self.key(k)!;
-				o.set(key, self.node(self.p.next()!)!);   // duplicate keys: last wins
+				Object* value = self.node(self.p.next()!)!;
+				if (o.has_key(key))   // duplicate keys: last wins; keep the old value for aliases
+				{
+					self.dropped.push(o.get(key)!!);
+					o.map.remove(key);
+				}
+				o.set(key, value);
 			}
 			self.depth--;
 		default:
 			return self.error(e.start, "unexpected event", parser::SYNTAX_ERROR)~;
 	}
-	if (e.anchor.len) self.anchors.set(e.anchor, self.clone(o, tmem, false, 0)!);
+	if (e.anchor.len) self.anchors.set(e.anchor, o);
 	return o;
 }
 
 // A scalar key is its text (a null key is ""); a collection key is its compact JSON text.
 fn String? Builder.key(&self, Event e)
 {
+	bool plain_key = e.type == SCALAR && !e.tag.len && !e.anchor.len;
+	if (plain_key) return e.style == PLAIN && is_null_text(e.value) ? "" : e.value;
 	Object* k = self.node(e)!;
-	defer k.free();
+	self.dropped.push(k);   // not freed yet: an alias may refer to it
 	if (k.is_null()) return "";
 	if (e.type == SCALAR) return e.value;
-	if (k.is_string()) return k.s.tcopy();
+	if (k.is_string()) return k.s;
 	return string::tformat("%s", (Json){ k });
 }
 
-// Deep copy (aliases must not share an Object*: Object.free would free it twice).
-// `count`: the copy is an alias expansion and counts against MAX_ALIAS_NODES.
-fn Object*? Builder.clone(&self, Object* o, Allocator a, bool count, int depth)
+// Deep copy for an alias (sharing an Object* would make Object.free free it twice). Every
+// created node counts against MAX_ALIAS_NODES; `depth` is the depth of the alias.
+fn Object*? Builder.clone(&self, Object* o, Allocator a, int depth)
 {
-	if (count && ++self.alias_nodes > MAX_ALIAS_NODES) return LIMIT_EXCEEDED~;
+	if (++self.alias_nodes > MAX_ALIAS_NODES) return LIMIT_EXCEEDED~;
 	switch
 	{
 		case o.is_null(): return object::new_null();
@@ -102,13 +113,13 @@ fn Object*? Builder.clone(&self, Object* o, Allocator a, bool count, int depth)
 	{
 		Object* arr = object::new_array(a);
 		defer catch arr.free();
-		for (sz i = 0; i < o.get_len(); i++) arr.push_object(self.clone(o.get_at(i), a, count, depth + 1)!);
+		for (sz i = 0; i < o.get_len(); i++) arr.push_object(self.clone(o.get_at(i), a, depth + 1)!);
 		return arr;
 	}
 	Object* map = object::new_obj(a);
 	defer catch map.free();
 	if (o.type == void) return map;   // empty map
-	foreach (key : o.map.keys(tmem)) map.set(key, self.clone(o.get(key)!, a, count, depth + 1)!);
+	foreach (key : o.map.keys(tmem)) map.set(key, self.clone(o.get(key)!, a, depth + 1)!);
 	return map;
 }
 
@@ -119,43 +130,33 @@ fn Object*? Builder.clone(&self, Object* o, Allocator a, bool count, int depth)
 fn Object*? Builder.scalar(&self, Event e)
 {
 	String v = e.value;
-	String tag = e.tag;
-	if (!tag.len && e.style == PLAIN)
+	bool core = !e.tag.len && e.style == PLAIN;
+	if ((core || e.tag == TAG_NULL) && is_null_text(v)) return object::new_null();
+	if ((core || e.tag == TAG_BOOL) && is_bool_text(v)) return object::new_bool(v[0] == 't' || v[0] == 'T');
+	bool overflow;   // an int that does not fit: a decimal one becomes a float, 0x/0o a string
+	if (core || e.tag == TAG_INT)
 	{
-		switch
-		{
-			case is_null_text(v): tag = TAG_NULL;
-			case is_bool_text(v): tag = TAG_BOOL;
-			case is_int_text(v): tag = TAG_INT;
-			case is_float_text(v): tag = TAG_FLOAT;
-		}
+		int128? i = int_of(v);
+		if (try i) return object::new_int(self.a, i);
+		overflow = @catch(i) != NOT_FOUND;
 	}
-	switch (tag)
+	if (core || overflow || e.tag == TAG_FLOAT)
+	{
+		double? d = float_of(v);
+		if (try d) return object::new_float(self.a, d);
+	}
+	switch (e.tag)
 	{
 		case TAG_NULL:
-			if (is_null_text(v)) return object::new_null();
 		case TAG_BOOL:
-			if (is_bool_text(v)) return object::new_bool(v[0] == 't' || v[0] == 'T');
 		case TAG_INT:
-			if (is_int_text(v))
-			{
-				int128? i = v.starts_with("0o") ? v[2..].to_int128(8) : v.starts_with("0x") ? v[2..].to_int128(16) : v.to_int128();
-				if (try i) return object::new_int(self.a, i);
-				if (is_float_text(v)) return object::new_float(self.a, v.to_double()!);   // overflow
-				if (!e.tag.len) return object::new_string(self.a, v);   // 0x/0o overflow
-			}
-		case TAG_FLOAT:
-			if (is_float_text(v)) return object::new_float(self.a, float_value(v)!);
-		default:
-			return object::new_string(self.a, v);
+		case TAG_FLOAT: return self.error(e.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
+		default: return object::new_string(self.a, v);
 	}
-	return self.error(e.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
 }
 
 fn bool is_null_text(String v) => v == "" || v == "~" || v == "null" || v == "Null" || v == "NULL";
 fn bool is_bool_text(String v) => v == "true" || v == "True" || v == "TRUE" || v == "false" || v == "False" || v == "FALSE";
-fn bool is_inf_text(String v) => v == ".inf" || v == ".Inf" || v == ".INF";   // without the sign
-fn bool is_nan_text(String v) => v == ".nan" || v == ".NaN" || v == ".NAN";
 
 // Number of characters from `*i` on that are digits in `base`; advances `*i`.
 fn sz digits(String v, sz* i, int base = 10)
@@ -165,44 +166,45 @@ fn sz digits(String v, sz* i, int base = 10)
 	return *i - from;
 }
 
-// [-+]?[0-9]+ | 0o[0-7]+ | 0x[0-9a-fA-F]+
-fn bool is_int_text(String v)
+// [-+]?[0-9]+ | 0o[0-7]+ | 0x[0-9a-fA-F]+; NOT_FOUND if `v` does not match, a fault from
+// to_int128 if it does not fit.
+fn int128? int_of(String v)
 {
-	sz i = 2;
-	if (v.starts_with("0o")) return digits(v, &i, 8) && i == v.len;
-	if (v.starts_with("0x")) return digits(v, &i, 16) && i == v.len;
-	i = v.len && (v[0] == '-' || v[0] == '+') ? 1 : 0;
-	return digits(v, &i) && i == v.len;
+	int base = v.starts_with("0o") ? 8 : v.starts_with("0x") ? 16 : 10;
+	sz from = base == 10 ? 0 : 2;
+	sz i = from;
+	if (base == 10 && v.len && (v[0] == '-' || v[0] == '+')) i++;
+	if (!digits(v, &i, base) || i != v.len) return NOT_FOUND~;
+	return v[from..].to_int128(base);
 }
 
-// [-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)? | [-+]?\.(inf|Inf|INF) | \.(nan|NaN|NAN)
-fn bool is_float_text(String v)
+// [-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)? | [-+]?\.(inf|Inf|INF) | \.(nan|NaN|NAN);
+// NOT_FOUND if `v` does not match. Out of range is ±inf.
+fn double? float_of(String v)
 {
-	sz i = v.len && (v[0] == '-' || v[0] == '+') ? 1 : 0;
-	if (is_inf_text(v[i..])) return true;
-	if (is_nan_text(v)) return true;
+	bool minus = v.len && v[0] == '-';
+	sz i = v.len && (minus || v[0] == '+') ? 1 : 0;
+	String unsigned = v[i..];
+	if (unsigned == ".inf" || unsigned == ".Inf" || unsigned == ".INF") return minus ? -double::inf : double::inf;
+	if (v == ".nan" || v == ".NaN" || v == ".NAN") return double::nan;
 	sz whole = digits(v, &i);
 	if (i < v.len && v[i] == '.')
 	{
 		i++;
-		if (!digits(v, &i) && !whole) return false;
+		if (!digits(v, &i) && !whole) return NOT_FOUND~;
 	}
 	else if (!whole)
 	{
-		return false;
+		return NOT_FOUND~;
 	}
 	if (i < v.len && (v[i] == 'e' || v[i] == 'E'))
 	{
 		i++;
 		if (i < v.len && (v[i] == '-' || v[i] == '+')) i++;
-		if (!digits(v, &i)) return false;
+		if (!digits(v, &i)) return NOT_FOUND~;
 	}
-	return i == v.len;
-}
-
-fn double? float_value(String v)
-{
-	if (is_nan_text(v)) return double::nan;
-	if (is_inf_text(v[(v[0] == '-' || v[0] == '+') ? 1 : 0..])) return v[0] == '-' ? -double::inf : double::inf;
-	return v.to_double();
+	if (i != v.len) return NOT_FOUND~;
+	double? d = v.to_double();
+	if (catch d) return minus ? -double::inf : double::inf;   // only the range can fail here
+	return d;
 }

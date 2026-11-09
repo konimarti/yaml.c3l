@@ -910,9 +910,11 @@ fn void? Scanner.fetch_directive(&self)
 			if (handle.len > 2) foreach (c : handle[1:handle.len - 2]) ok &= is_word_char(c);
 			if (!ok) return self.error(m, "invalid %TAG handle", INVALID_DIRECTIVE)~;
 			self.skip_blanks();
+			// a prefix cannot start with a flow indicator (an escaped one, "%2C", is fine)
+			if (is_flow_indicator(self.peek())) return self.error(self.mark, "invalid %TAG prefix", INVALID_DIRECTIVE)~;
 			Mark pm = self.mark;
 			String prefix = self.scan_tag_uri(true)!;
-			if (!prefix.len || is_flow_indicator(prefix[0])) return self.error(pm, "invalid %TAG prefix", INVALID_DIRECTIVE)~;
+			if (!prefix.len) return self.error(pm, "invalid %TAG prefix", INVALID_DIRECTIVE)~;
 			self.end_of_line()!;
 			self.push(T_TAG_DIRECTIVE, m, prefix, handle: handle);
 		default:

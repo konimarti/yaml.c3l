@@ -75,3 +75,21 @@ fn void json_string_escapes() @test => @pool()
 {
 	test::eq(json(`"q\" b\\ n\n t\t c\x01 é"`)!!, `"q\" b\\ n\n t\t c\u0001 é"` "\n");
 }
+
+// M6 review item 2: doubles near DBL_MAX print (the %.15g text does not read back)
+fn void largest_floats() @test => @pool()
+{
+	test::eq(json("[1.7976931348623157e308, -1.7976931348623157e308]")!!, "[1.7976931348623157e+308,-1.7976931348623157e+308]\n");
+}
+
+// M6 review item 3: floats out of range are ±inf, not an error
+fn void float_out_of_range() @test => @pool()
+{
+	YamlData data = yaml::from_string("a: 1e400\nb: !!float -1e400\nc: 1" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" "0000000000\nd: 1e-400\n", mem, false)!!;
+	defer data.free();
+	test::eq(data.get("a")!!.f, double::inf);
+	test::eq(data.get("b")!!.f, -double::inf);
+	test::eq(data.get("c")!!.f, double::inf);
+	test::eq(data.get("d")!!.f, 0.0);
+	test::eq(json("a: 1e400")!!, `{"a":null}` "\n");
+}

@@ -91,3 +91,9 @@ fn void tag_prefix_uri() @test => @pool()
 	test::@error(test_util::events("%TAG !e! ,x\n--- !e!y a\n", " ", false), parser::INVALID_DIRECTIVE);
 	test::@error(test_util::events("%TAG !e! {x}\n--- !e!y a\n", " ", false), parser::INVALID_DIRECTIVE);
 }
+
+// M6 review item 4: an escaped flow indicator may start a %TAG prefix
+fn void tag_prefix_escaped_first_char() @test => @pool()
+{
+	test::eq(test_util::events("%TAG !e! %2Cx\n--- !e!y a\n", " ", false)!!, "+DOC --- =VAL <,xy> :a -DOC");
+}

@@ -69,7 +69,8 @@ fn sz? write_float(Formatter* f, double d)
 	foreach (format : (String[]){ "%.15g", "%.16g", "%.17g" })
 	{
 		s = string::tformat(format, d);
-		if (s.to_double()!! == d) break;
+		double? back = s.to_double();   // fails when rounding goes past DBL_MAX; %.17g always reads back
+		if (try back && back == d) break;
 	}
 	return f.print(s);
 }
@@ -137,17 +138,19 @@ fn Object*? YamlData.get(&self, String path) @operator([]) => self.get_in(0, pat
 
 fn Object*? YamlData.get_in(&self, sz doc, String path)
 {
-	if (doc >= self.docs.size) return NOT_FOUND~;
+	if (doc >= self.docs.len()) return NOT_FOUND~;
 	Object* o = self.docs[doc];
 	if (!path.len) return o;
 	foreach (segment : path.tsplit("."))
 	{
 		if (o.is_array())
 		{
-			int? i = segment.to_int();
-			if (catch i) return NOT_FOUND~;
-			if (i < 0 || i >= o.get_len()) return NOT_FOUND~;
-			o = o.get_at(i);
+			sz i = 0;
+			if (!digits(segment, &i) || i != segment.len) return NOT_FOUND~;   // only plain digits
+			int? index = segment.to_int();
+			if (catch index) return NOT_FOUND~;
+			if (index >= o.get_len()) return NOT_FOUND~;
+			o = o.get_at(index);
 		}
 		else if (o.is_map())
 		{
@@ -163,7 +166,7 @@ fn Object*? YamlData.get_in(&self, sz doc, String path)
 
 fn sz YamlData.len(&self) @operator(len)
 {
-	return self.docs.size;
+	return self.docs.len();
 }
 
 fn void YamlData.free(&self)
