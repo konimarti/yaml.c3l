@@ -33,9 +33,7 @@ fn void nested_collection_keys() @test => @pool()
 	many.append("}");
 	foreach (s : (String[]){ flow.str_view(), block.str_view(), many.str_view() })
 	{
-		Yaml coll_data = yaml2::from_string(s, mem, false)!!;
-		defer coll_data.free();
-		test::@error(port_test_util::check_json_limit(&coll_data), parser::LIMIT_EXCEEDED);
+		test::@error(yaml2::from_string(s, mem, false), parser::LIMIT_EXCEEDED);
 	}
 	Yaml data = yaml2::from_string("{[a, {b: c}]: 1}", mem, false)!!;
 	defer data.free();
@@ -196,9 +194,7 @@ fn void limits_cover_the_stream() @test => @pool()
 		keys.append_repeat('}', 19);
 		keys.append("\n");
 	}
-	Yaml data_keys = yaml2::from_string(keys.str_view(), mem, false)!!;
-	defer data_keys.free();
-	test::@error(port_test_util::check_json_limit(&data_keys), parser::LIMIT_EXCEEDED);
+	test::@error(yaml2::from_string(keys.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 
 	Yaml data = yaml2::from_string(keys.str_view()[:keys.str_view().index_of("\n")!! + 1], mem, false)!!;
 	data.free();

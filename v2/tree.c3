@@ -53,6 +53,7 @@ struct Budget
 {
 	sz alias_nodes;
 	sz alias_bytes;
+	sz key_text;
 }
 
 // Lives on the heap: Yaml and Node stay valid when copied or returned by value.

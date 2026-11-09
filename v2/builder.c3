@@ -566,6 +566,12 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					}
 					else
 					{
+						sz max_budget = parser::MAX_KEY_TEXT + (sz)parser::KEY_TEXT_PER_BYTE * self.parser.input().len;
+						if (catch err = measure_key_json(self.tree, tid, max_budget))
+						{
+							return self.parser.error(key_ev.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+						}
+
 						Event val_ev = self.parser.next()!;
 						Span kspan = { tid, 0 };
 						NodeResult vres = self.build_node(val_ev, id, child_prev, kspan, F_KEY | F_KEY_NODE)!;
@@ -586,6 +592,12 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					// Complex collection key (SEQUENCE_START or MAPPING_START)
 					NodeResult kres = self.build_node(key_ev, 0, 0, (Span){}, 0)!;
 					uint key_node_id = kres.id;
+
+					sz max_budget = parser::MAX_KEY_TEXT + (sz)parser::KEY_TEXT_PER_BYTE * self.parser.input().len;
+					if (catch err = measure_key_json(self.tree, key_node_id, max_budget))
+					{
+						return self.parser.error(key_ev.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+					}
 
 					Event val_ev = self.parser.next()!;
 					Span kspan = { key_node_id, 0 };

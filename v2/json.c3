@@ -32,7 +32,7 @@ fn sz? write_yaml_json(Formatter* f, Yaml* y)
 {
 	sz n = 0;
 	if (!y.tree) return 0;
-	sz key_budget = 0;
+	sz key_budget = y.tree.budget.key_text;
 	sz max_budget = parser::MAX_KEY_TEXT + (y.tree.input.len ? parser::KEY_TEXT_PER_BYTE * y.tree.input.len : 0);
 	uint child = y.tree.nodes[0].first;
 	while (child != 0)
@@ -42,6 +42,50 @@ fn sz? write_yaml_json(Formatter* f, Yaml* y)
 		child = y.tree.nodes[child].next;
 	}
 	return n;
+}
+
+struct KeyTextCounter @private
+{
+	sz* budget;
+	sz max_budget;
+}
+
+fn void? key_counter_char(void* data, char c) @private
+{
+	KeyTextCounter* kc = (KeyTextCounter*)data;
+	(*kc.budget)++;
+	if (*kc.budget > kc.max_budget) return parser::LIMIT_EXCEEDED~;
+}
+
+fn void? measure_key_json(Tree* tree, uint key_node_id, sz max_budget)
+{
+	KeyTextCounter kc = { .budget = &tree.budget.key_text, .max_budget = max_budget };
+	Formatter f;
+	f.init(&key_counter_char, &kc);
+	Node n = (Node){ tree, key_node_id };
+	write_node_json_budget(&f, n, &tree.budget.key_text, max_budget)!;
+}
+
+fn void? stream_write_char(void* data, char c) @private
+{
+	OutStream* stream = (OutStream*)data;
+	return (*stream).write_byte(c);
+}
+
+fn sz? Yaml.write_json(&self, OutStream out)
+{
+	Formatter f;
+	f.init(&stream_write_char, &out);
+	return write_yaml_json(&f, self);
+}
+
+fn String? Yaml.to_json(&self, Allocator allocator = mem)
+{
+	ByteWriter bw;
+	bw.init(allocator);
+	defer catch (void)bw.destroy();
+	self.write_json(&bw)!;
+	return bw.str_view();
 }
 
 fn sz? write_node_json_budget(Formatter* f, Node n, sz* key_budget, sz max_budget) @private

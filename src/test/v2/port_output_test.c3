@@ -26,3 +26,20 @@ fn void path_segments() @test => @pool()
 	}
 	assert(data["a"].exists(), "the empty path is the whole document");
 }
+
+fn void checked_json_writer() @test => @pool()
+{
+	Yaml data = yaml2::from_string("hello: world\nnumber: 42\n", mem, false)!!;
+	defer data.free();
+
+	// to_json
+	String json_str = data.to_json(tmem)!!;
+	test::eq(json_str, "{\"hello\":\"world\",\"number\":42}\n");
+
+	// write_json
+	ByteWriter bw;
+	bw.tinit();
+	sz written = data.write_json(&bw)!!;
+	test::eq(bw.str_view(), "{\"hello\":\"world\",\"number\":42}\n");
+	test::eq(written, json_str.len);
+}
