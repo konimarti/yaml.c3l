@@ -26,7 +26,7 @@ struct SimpleKey
 	bool compact_ok;   // may open a new block mapping on this line
 	bool tab_indent;   // its line has a TAB in the indentation
 	bool flow_map;     // the level is a flow mapping: the key may span lines ("{a\n: b}")
-	sz token_number;   // absolute token index (tokens_taken + index in queue)
+	sz token_number;   // absolute token index (tokens_taken + position after the queue head)
 	Mark mark;
 }
 
@@ -37,6 +37,7 @@ struct Scanner
 	bool verbose;
 	List {Token} tokens;
 	sz tokens_taken;           // tokens already handed to the parser
+	sz head;                   // index of the next token in `tokens` (no O(n) pop_first)
 	bool stream_start_done;
 	bool stream_end_done;
 	int indent;                // 0-based column of the current block, -1 at stream level
@@ -128,13 +129,22 @@ fn Token? Scanner.next_token(&self)
 {
 	self.fetch_more_tokens()!;
 	self.tokens_taken++;
-	return self.tokens.pop_first();
+	Token t = self.tokens[self.head++];   // the queue is reset once it is drained
+	if (self.head == self.tokens.len())
+	{
+		self.tokens.clear();
+		self.head = 0;
+	}
+	return t;
 }
+
+// The position in `tokens` of the absolute token index `number`.
+fn sz Scanner.queue_index(&self, sz number) @inline => self.head + number - self.tokens_taken;
 
 fn Token? Scanner.peek_token(&self)
 {
 	self.fetch_more_tokens()!;
-	return self.tokens[0];
+	return self.tokens[self.head];
 }
 
 // Fetch until the head token can no longer become a KEY.
@@ -142,7 +152,7 @@ fn void? Scanner.fetch_more_tokens(&self)
 {
 	while (true)
 	{
-		if (self.tokens.len() > 0)
+		if (self.tokens.len() > self.head)
 		{
 			self.stale_simple_keys()!;
 			bool head_may_be_key = false;
@@ -267,7 +277,7 @@ fn void Scanner.roll_indent(&self, int column, TokenType type, Mark m, sz number
 	}
 	else
 	{
-		self.tokens.insert_at(number - self.tokens_taken, t);
+		self.tokens.insert_at(self.queue_index(number), t);
 	}
 }
 
@@ -293,7 +303,7 @@ fn void? Scanner.save_simple_key(&self)
 		.required = !self.flow_level && self.indent == self.col(),
 		.compact_ok = self.compact_ok,
 		.tab_indent = self.tab_indent,
-		.token_number = self.tokens_taken + self.tokens.len(),
+		.token_number = self.tokens_taken + self.tokens.len() - self.head,
 		.mark = self.mark,
 	};
 }
@@ -364,7 +374,7 @@ fn void? Scanner.fetch_value(&self)
 				return self.error(k.mark, "mapping values are not allowed here")~;
 			}
 		}
-		self.tokens.insert_at(k.token_number - self.tokens_taken, { .type = T_KEY, .start = k.mark });
+		self.tokens.insert_at(self.queue_index(k.token_number), { .type = T_KEY, .start = k.mark });
 		if (!self.flow_level) self.roll_indent(k.mark.column - 1, T_BLOCK_MAPPING_START, k.mark, k.token_number);
 		k.possible = false;
 		self.simple_key_allowed = false;

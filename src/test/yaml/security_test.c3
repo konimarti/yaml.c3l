@@ -20,3 +20,18 @@ fn void flow_depth_limit() @test => @pool()
 	test::@error(yaml::from_string(deep.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 	assert(start.to_now() < (NanoDuration)100_000_000, "the limit must be hit early");
 }
+
+// S3: a flow collection used as a key in a flow mapping keeps all its tokens queued; taking
+// them one by one was O(n) each (before: 50 000 entries took seconds, valid YAML)
+fn void long_queued_key() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("{{");
+	s.append_repeat("a, ", 50_000);
+	s.append("}: x}");
+	Clock start = clock::now();
+	test_util::events(s.str_view())!!;
+	YamlData data = yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false)!!;
+	data.free();
+	assert(start.to_now() < (NanoDuration)500_000_000, "the token queue must be linear");
+}
