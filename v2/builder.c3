@@ -474,6 +474,17 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					Span kspan = (kschema == Schema.NULL) ? (Span){} : key_ev.value;
 					String cmp_key = (kschema == Schema.NULL) ? "" : ktext;
 
+					if (key_ev.anchor.len)
+					{
+						uint knode = self.tree.new_node(SCALAR, style: key_ev.style, schema: kschema, flags: 0, val: key_ev.value);
+						Props* kp = self.tree.props_of(knode);
+						kp.anchor = key_ev.anchor;
+						kp.tag = key_ev.tag;
+						kp.tag_prefix = key_ev.tag_prefix;
+						kp.weight = self.tree.new_weight(1, (ulong)key_ev.value.len);
+						self.anchors.insert(self.parser.text(key_ev.anchor), knode)!;
+					}
+
 					Event val_ev = self.parser.next()!;
 					NodeResult vres = self.build_node(val_ev, id, child_prev, kspan, F_KEY)!;
 					uint val_id = vres.id;
@@ -484,16 +495,6 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 						p.key_anchor = key_ev.anchor;
 						p.key_tag = key_ev.tag;
 						p.key_tag_prefix = key_ev.tag_prefix;
-					}
-					if (key_ev.anchor.len)
-					{
-						uint knode = self.tree.new_node(SCALAR, style: key_ev.style, schema: kschema, flags: 0, val: key_ev.value);
-						Props* kp = self.tree.props_of(knode);
-						kp.anchor = key_ev.anchor;
-						kp.tag = key_ev.tag;
-						kp.tag_prefix = key_ev.tag_prefix;
-						kp.weight = self.tree.new_weight(1, (ulong)key_ev.value.len);
-						self.anchors.insert(self.parser.text(key_ev.anchor), knode)!;
 					}
 
 					entry_count++;

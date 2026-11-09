@@ -50,6 +50,29 @@ fn void alias_after_duplicate_key() @test => @pool()
 	test::eq(data.get("a")!!.as_int()!!, 2);
 }
 
+fn void key_anchors_and_alias() @test => @pool()
+{
+	String[*] inputs = {
+		"&a k: *a\n",
+		"{&a k: *a}\n",
+		"? &a k\n: *a\n",
+		"[ &a k: *a ]\n",
+	};
+	foreach (s : inputs)
+	{
+		Yaml data = yaml2::from_string(s, mem, false)!!;
+		defer data.free();
+		if (data.doc(0).is_seq())
+		{
+			test::eq(data.get("0.k")!!.as_string()!!, "k");
+		}
+		else
+		{
+			test::eq(data.get("k")!!.as_string()!!, "k");
+		}
+	}
+}
+
 fn void undefined_alias() @test => @pool()
 {
 	test::@error(yaml2::from_string("a: *x\n", mem, false), yaml2::UNDEFINED_ALIAS);
