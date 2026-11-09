@@ -70,7 +70,10 @@ Quoted and block scalars are strings. The tags `!!str`, `!!int`, `!!float`, `!!b
 `!!null` force a type; any other tag is kept in the event stream but does not change the
 value.
 
-Aliases are deep copies of the anchored node. Duplicate keys keep the last value.
+Aliases are deep copies of the anchored node. Duplicate keys keep the last value. A null key
+(`~: x`, or `? : x`) and the empty string key (`"": x`) are the same key `""`, so
+`{"": 1, ~: 2}` has a single entry. A collection used as a key (`[a, b]: c`) becomes its
+compact JSON text (`["a","b"]`).
 
 ### Error handling
 
