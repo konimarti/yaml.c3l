@@ -14,23 +14,19 @@ prints one CSV line.
 ## Modes
 
 - `tree`: `yaml::from_string` on an input already in memory (no I/O), then `free`.
-- `tree2`: `yaml2::from_string` (v2 tree) on an input in memory, then `free`.
-- `from_buffer`: `yaml2::from_buffer` in-place parsing of a mutable buffer, then `free`.
-- `events`: `yaml::parser::Parser.next()` loop only, no tree.
-- `events2`: `yaml2::parser::Parser.next()` zero-allocation in-place event parser, no tree.
+- `from_buffer`: `yaml::from_buffer` in-place parsing of a writable buffer (re-copied before every
+  timed run, outside the clock), then `free`.
+- `events`: the `Parser.next()` loop on a writable buffer, no tree (zero allocation).
 - `decode`: `yaml::decode{Config}` of a tree built beforehand (only `servers.yaml`).
-- `decode2`: `yaml2::decode{Config}` of a v2 tree built beforehand (only `servers.yaml`).
-- `json`: `string::tformat("%s", tree)` JSON output on the old tree.
-- `json2`: `string::tformat("%s", tree)` streaming JSON output on the v2 tree.
-- `find`: look up 1,000 keys (`map_100k.k_%d`) on the old tree.
-- `find2`: look up 1,000 keys (`map_100k.k_%d`) on the v2 tree (using lazy map index).
-- `foreach`: recursive traversal counting all nodes on the old tree.
-- `foreach2`: recursive traversal counting all nodes on the v2 tree.
-- `free`: `yaml::Yaml.free` on an existing tree.
-- `free2`: `yaml2::Yaml.free` on an existing v2 tree.
+- `json`: `string::tformat("%s", tree)`, JSON output of a tree built beforehand.
+- `find`: 1,000 key lookups (`map_100k.k_%d`) on a tree built beforehand (lazy map index).
+- `foreach`: recursive traversal counting all nodes of a tree built beforehand.
+- `free`: `Yaml.free` on an existing tree.
 
-The library calls are in `run_tree`, `run_events`, `load_tree` and `run_decode` in `bench.c3`;
-that is all to change when the API changes.
+The library calls are in the `run_*` functions and `load_tree` of `bench.c3`; that is all to change
+when the API changes. `baseline.md` holds the numbers of the old `Object` tree against this
+library, measured before the old one was removed (its `tree`, `events`, ... rows are the old
+library, the rows with a `2` suffix are the current modes).
 
 ## Columns
 
@@ -45,9 +41,9 @@ that is all to change when the API changes.
 
 ## Caveats
 
-- The temporary allocator (`tmem`: scanner/parser working memory, scalar buffers) is not counted
-  in allocs/bytes: it cannot be wrapped from outside. Its use shows only in RSS, so `events`
-  reports 0 allocations. For `events` and a rewrite that uses `tmem`, compare RSS.
+- The temporary allocator (`tmem`) is not counted in allocs/bytes: it cannot be wrapped from
+  outside. The parser does not use it; for `events` the proof is 0 allocations and an RSS peak of
+  about the input.
 - RSS is a high-water mark of the process: freed memory the allocator keeps is included. `decode`
   RSS includes the tree it decodes from.
 - Run on an idle machine; times are of one process, no warm-up beyond the N repetitions (use the
@@ -55,4 +51,6 @@ that is all to change when the API changes.
 - Files: `config` (nested maps/sequences/scalars), `small-docs` (many tiny documents), `long-strings`
   (quoted, folded and block scalars with escapes), `deep` (200 levels, limit 256), `flow`
   (JSON-like, one document per line), `servers` (fits the decode struct), `suite` (all valid
-  yaml-test-suite inputs, tiny).
+  yaml-test-suite inputs, tiny), and the edge inputs of `gen.py` (wide sequence, 100 k-entry map,
+  alias-heavy, escapes with `\L`/`\P`, depth 256/257, `%TAG`, flow keys of 2040/2041 tokens, block
+  scalar at EOF). Lines stay below 65,535 columns, the scanner's limit.

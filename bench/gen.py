@@ -145,7 +145,9 @@ def wide_flow_seq(size):
         items.append(item)
         n += len(item) + 2
         i += 1
-    return "[" + ", ".join(items) + "]\n"
+    # lines stay below the 65535-column limit of the scanner: break after every 1000 items
+    rows = [", ".join(items[k:k + 1000]) for k in range(0, len(items), 1000)]
+    return "[" + ",\n".join(rows) + "]\n"
 
 
 def map_100k():
@@ -168,7 +170,7 @@ def alias_heavy():
     # 90 sequence items each expanding 10k aliases = 900k alias nodes (< 1M budget)
     for row in range(90):
         out.append("  - [")
-        out.append(", ".join("*a%d" % i for i in range(10_000)))
+        out.append(",\n    ".join(", ".join("*a%d" % i for i in range(k, k + 1000)) for k in range(0, 10_000, 1000)))
         out.append("]\n")
     return "".join(out)
 
