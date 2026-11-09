@@ -3,7 +3,15 @@ module yaml2;
 
 import std::math;
 import std::io;
+import std::time;
 import yaml2::parser;
+
+fn ulong splitmix64(ulong x) @inline
+{
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9UL;
+	x = (x ^ (x >> 27)) * 0x94d049bb133111ebUL;
+	return x ^ (x >> 31);
+}
 
 struct NodeResult @private
 {
@@ -11,6 +19,12 @@ struct NodeResult @private
 	uint height;
 	ulong nodes;
 	ulong bytes;
+}
+
+struct AliasInfo @private
+{
+	uint height;
+	Weight weight;
 }
 
 fn ulong sat_add(ulong a, ulong b) @inline @private => (ulong::max - a < b) ? ulong::max : a + b;
@@ -250,7 +264,8 @@ struct Builder
 
 fn void Builder.init(&self, Tree* tree, Parser* parser, Allocator a, bool verbose)
 {
-	ulong seed = ((ulong)(uptr)tree) ^ 0x9e3779b97f4a7c15UL;
+	ulong raw = ((ulong)(uptr)tree) ^ 0x9e3779b97f4a7c15UL ^ (ulong)(long)time::now().to_seconds();
+	ulong seed = splitmix64(raw);
 	*self = {
 		.tree = tree,
 		.parser = parser,
@@ -259,6 +274,30 @@ fn void Builder.init(&self, Tree* tree, Parser* parser, Allocator a, bool verbos
 		.seed = seed,
 	};
 	self.anchors.init(a, seed);
+}
+
+fn AliasInfo? Builder.alias_check(&self, uint tid)
+{
+	NodeData* td = &self.tree.nodes[tid];
+	uint target_height = 0;
+	Weight target_weight = { 1, 0 };
+	if (td.props)
+	{
+		Props* tp = &self.tree.props[td.props];
+		target_height = tp.height;
+		if (tp.weight) target_weight = self.tree.weights[tp.weight];
+	}
+	if (self.depth + (int)target_height > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
+
+	ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
+	ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
+	self.tree.budget.alias_nodes = (sz)next_nodes;
+	self.tree.budget.alias_bytes = (sz)next_bytes;
+	if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
+	{
+		return parser::LIMIT_EXCEEDED~;
+	}
+	return (AliasInfo){ target_height, target_weight };
 }
 
 fn void Builder.free(&self)
@@ -378,37 +417,19 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 
 			uint tid = target;
 			NodeData* td = &self.tree.nodes[tid];
-
-			uint target_height = 0;
-			Weight target_weight = { 1, 0 };
-			if (td.props)
-			{
-				Props* tp = &self.tree.props[td.props];
-				target_height = tp.height;
-				if (tp.weight) target_weight = self.tree.weights[tp.weight];
-			}
-			if (self.depth + (int)target_height > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
-
-			ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
-			ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
-			self.tree.budget.alias_nodes = (sz)next_nodes;
-			self.tree.budget.alias_bytes = (sz)next_bytes;
-			if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
-			{
-				return parser::LIMIT_EXCEEDED~;
-			}
+			AliasInfo ai = self.alias_check(tid)!;
 
 			if (td.kind == SCALAR)
 			{
 				uint id = self.tree.new_node(SCALAR, style: td.style, schema: td.schema, flags: flags | F_ALIAS, key: key_span, val: td.val);
-				return (NodeResult){ id, 0, target_weight.nodes, target_weight.bytes };
+				return (NodeResult){ id, 0, ai.weight.nodes, ai.weight.bytes };
 			}
 			else
 			{
 				uint id = self.tree.new_node(td.kind, style: td.style, schema: STR, flags: flags | F_ALIAS, key: key_span);
 				self.tree.nodes[id].first = tid;
 				self.tree.nodes[id].val.len = td.val.len;
-				return (NodeResult){ id, target_height, target_weight.nodes, target_weight.bytes };
+				return (NodeResult){ id, ai.height, ai.weight.nodes, ai.weight.bytes };
 			}
 
 		case SEQUENCE_START:
@@ -526,25 +547,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					if (catch target) return self.parser.error(key_ev.start, "undefined alias", UNDEFINED_ALIAS)~;
 					uint tid = target;
 					NodeData* td = &self.tree.nodes[tid];
-
-					uint target_height = 0;
-					Weight target_weight = { 1, 0 };
-					if (td.props)
-					{
-						Props* tp = &self.tree.props[td.props];
-						target_height = tp.height;
-						if (tp.weight) target_weight = self.tree.weights[tp.weight];
-					}
-					if (self.depth + (int)target_height > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
-
-					ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
-					ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
-					self.tree.budget.alias_nodes = (sz)next_nodes;
-					self.tree.budget.alias_bytes = (sz)next_bytes;
-					if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
-					{
-						return parser::LIMIT_EXCEEDED~;
-					}
+					AliasInfo ai = self.alias_check(tid)!;
 
 					if (td.kind == SCALAR)
 					{
@@ -581,10 +584,10 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 						self.tree.append_after(id, child_prev, val_id);
 						child_prev = val_id;
 
-						uint combined_height = target_height > vres.height ? target_height : vres.height;
+						uint combined_height = ai.height > vres.height ? ai.height : vres.height;
 						if (combined_height > max_child_height) max_child_height = combined_height;
-						sum_nodes = sat_add(sat_add(sum_nodes, target_weight.nodes), vres.nodes);
-						sum_bytes = sat_add(sat_add(sum_bytes, target_weight.bytes), vres.bytes);
+						sum_nodes = sat_add(sat_add(sum_nodes, ai.weight.nodes), vres.nodes);
+						sum_bytes = sat_add(sat_add(sum_bytes, ai.weight.bytes), vres.bytes);
 					}
 				}
 				else
