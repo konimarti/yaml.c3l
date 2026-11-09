@@ -41,7 +41,7 @@ fn Event? Parser.next(&self)
 		case DOCUMENT_START: return self.document_start(false);
 		case DOCUMENT_CONTENT: return self.document_content();
 		case DOCUMENT_END: return self.document_end();
-		case BLOCK_NODE: return self.node(false);
+		case BLOCK_NODE: return self.node();
 		case BLOCK_SEQUENCE_ENTRY: return self.block_sequence_entry();
 		case INDENTLESS_SEQUENCE_ENTRY: return self.indentless_sequence_entry();
 		case BLOCK_MAPPING_KEY: return self.block_mapping_key();
@@ -65,7 +65,7 @@ fn Event empty_scalar(Mark m) => { .type = SCALAR, .start = m };
 
 // The node at the next token, or an empty scalar if that token is one of `ends`; then continue
 // in state `next`.
-fn Event? Parser.node_or_empty(&self, State next, bool indentless_sequence, TokenType... ends)
+fn Event? Parser.node_or_empty(&self, State next, TokenType[] ends, bool indentless_sequence = false)
 {
 	Token t = self.scanner.peek_token()!;
 	if (t.is(...ends))
@@ -164,7 +164,7 @@ fn Event? Parser.document_content(&self)
 		self.state = self.states.pop()!!;
 		return empty_scalar(t.start);
 	}
-	return self.node(false);
+	return self.node();
 }
 
 fn Event? Parser.document_end(&self)
@@ -183,7 +183,8 @@ fn Event? Parser.document_end(&self)
 
 // One node with its optional properties (one anchor, one tag, in either order); the state to
 // return to is on top of `states`. Properties without a node give an empty scalar.
-fn Event? Parser.node(&self, bool indentless_sequence)
+// `indentless_sequence`: a '-' may start a sequence at the mapping's own indent ("key:\n- a").
+fn Event? Parser.node(&self, bool indentless_sequence = false)
 {
 	Token t = self.scanner.peek_token()!;
 	Event e = { .start = t.start };
@@ -257,7 +258,7 @@ fn Event? Parser.block_sequence_entry(&self)
 	}
 	if (t.type != T_BLOCK_ENTRY) return self.error(t.start, "expected '-' or a less indented line")~;
 	self.scanner.next_token()!;
-	return self.node_or_empty(BLOCK_SEQUENCE_ENTRY, false, T_BLOCK_ENTRY, T_BLOCK_END);
+	return self.node_or_empty(BLOCK_SEQUENCE_ENTRY, { T_BLOCK_ENTRY, T_BLOCK_END });
 }
 
 // "key:\n- a": entries at the mapping's own indent, no BLOCK_SEQUENCE_START/BLOCK_END.
@@ -270,7 +271,7 @@ fn Event? Parser.indentless_sequence_entry(&self)
 		return { .type = SEQUENCE_END, .start = t.start };
 	}
 	self.scanner.next_token()!;
-	return self.node_or_empty(INDENTLESS_SEQUENCE_ENTRY, false, T_BLOCK_ENTRY, T_KEY, T_VALUE, T_BLOCK_END);
+	return self.node_or_empty(INDENTLESS_SEQUENCE_ENTRY, { T_BLOCK_ENTRY, T_KEY, T_VALUE, T_BLOCK_END });
 }
 
 fn Event? Parser.block_mapping_key(&self)
@@ -287,7 +288,7 @@ fn Event? Parser.block_mapping_key(&self)
 			return empty_scalar(t.start);
 		case T_KEY:
 			self.scanner.next_token()!;
-			return self.node_or_empty(BLOCK_MAPPING_VALUE, true, T_KEY, T_VALUE, T_BLOCK_END);
+			return self.node_or_empty(BLOCK_MAPPING_VALUE, { T_KEY, T_VALUE, T_BLOCK_END }, indentless_sequence: true);
 		default:
 			return self.error(t.start, "expected a mapping key or a less indented line")~;
 	}
@@ -302,7 +303,7 @@ fn Event? Parser.block_mapping_value(&self)
 		return empty_scalar(t.start);
 	}
 	self.scanner.next_token()!;
-	return self.node_or_empty(BLOCK_MAPPING_KEY, true, T_KEY, T_VALUE, T_BLOCK_END);
+	return self.node_or_empty(BLOCK_MAPPING_KEY, { T_KEY, T_VALUE, T_BLOCK_END }, indentless_sequence: true);
 }
 
 // ---- flow collections ----------------------------------------------------
@@ -332,7 +333,7 @@ fn Event? Parser.flow_sequence_entry(&self, bool first)
 		if (t.type != T_FLOW_SEQUENCE_END)
 		{
 			self.states.push(FLOW_SEQUENCE_ENTRY);
-			return self.node(false);
+			return self.node();
 		}
 	}
 	self.scanner.next_token()!;
@@ -341,7 +342,7 @@ fn Event? Parser.flow_sequence_entry(&self, bool first)
 }
 
 fn Event? Parser.flow_sequence_entry_mapping_key(&self)
-	=> self.node_or_empty(FLOW_SEQUENCE_ENTRY_MAPPING_VALUE, false, T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END);
+	=> self.node_or_empty(FLOW_SEQUENCE_ENTRY_MAPPING_VALUE, { T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END });
 
 fn Event? Parser.flow_sequence_entry_mapping_value(&self)
 {
@@ -349,7 +350,7 @@ fn Event? Parser.flow_sequence_entry_mapping_value(&self)
 	self.state = FLOW_SEQUENCE_ENTRY_MAPPING_END;
 	if (t.type != T_VALUE) return empty_scalar(t.start);
 	self.scanner.next_token()!;
-	return self.node_or_empty(FLOW_SEQUENCE_ENTRY_MAPPING_END, false, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END);
+	return self.node_or_empty(FLOW_SEQUENCE_ENTRY_MAPPING_END, { T_FLOW_ENTRY, T_FLOW_SEQUENCE_END });
 }
 
 // "{a: 1, b, : c}": a missing key or value is an empty scalar.
@@ -362,7 +363,7 @@ fn Event? Parser.flow_mapping_key(&self, bool first)
 		if (t.type == T_KEY)
 		{
 			self.scanner.next_token()!;
-			return self.node_or_empty(FLOW_MAPPING_VALUE, false, T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END);
+			return self.node_or_empty(FLOW_MAPPING_VALUE, { T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END });
 		}
 		if (t.type == T_VALUE)
 		{
@@ -372,7 +373,7 @@ fn Event? Parser.flow_mapping_key(&self, bool first)
 		if (t.type != T_FLOW_MAPPING_END)
 		{
 			self.states.push(FLOW_MAPPING_EMPTY_VALUE);
-			return self.node(false);
+			return self.node();
 		}
 	}
 	self.scanner.next_token()!;
@@ -386,5 +387,5 @@ fn Event? Parser.flow_mapping_value(&self, bool empty)
 	self.state = FLOW_MAPPING_KEY;
 	if (empty || t.type != T_VALUE) return empty_scalar(t.start);
 	self.scanner.next_token()!;
-	return self.node_or_empty(FLOW_MAPPING_KEY, false, T_FLOW_ENTRY, T_FLOW_MAPPING_END);
+	return self.node_or_empty(FLOW_MAPPING_KEY, { T_FLOW_ENTRY, T_FLOW_MAPPING_END });
 }
