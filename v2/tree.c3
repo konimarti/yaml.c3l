@@ -189,3 +189,25 @@ fn void Tree.shadow(&self, uint id)
 	self.nodes[id].flags |= F_SHADOWED;
 	self.nodes[self.nodes[id].parent].val.len--;
 }
+
+fn void Tree.reserve_nodes(&self, uint cap)
+{
+	if (self.cap < cap)
+	{
+		self.cap = cap;
+		self.nodes = alloc::realloc_array(self.allocator, self.nodes, NodeData, self.cap).ptr;
+	}
+}
+
+fn uint Tree.new_weight(&self, ulong nodes, ulong bytes)
+{
+	if (self.weights_len + 1 > self.weights_cap)
+	{
+		self.weights_cap = self.weights_cap ? self.weights_cap * 2 : 16;
+		self.weights = alloc::realloc_array(self.allocator, self.weights, Weight, self.weights_cap).ptr;
+	}
+	if (!self.weights_len) self.weights_len = 1;
+	uint idx = self.weights_len++;
+	self.weights[idx] = { .nodes = nodes, .bytes = bytes };
+	return idx;
+}

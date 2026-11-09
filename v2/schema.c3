@@ -61,3 +61,41 @@ fn double? float_of(String v)
 	if (catch d) return minus ? -double::inf : double::inf;   // only the range can fail here
 	return d;
 }
+
+fn bool is_core_tag(String prefix, String suffix, String core_name)
+{
+	if (prefix == "tag:yaml.org,2002:" && suffix == core_name) return true;
+	if (prefix.len == 0 && suffix.starts_with("tag:yaml.org,2002:") && suffix["tag:yaml.org,2002:".len..] == core_name) return true;
+	return false;
+}
+
+fn Schema? resolve_scalar(String v, ScalarStyle style, String prefix, String suffix)
+{
+	bool is_null_tag = is_core_tag(prefix, suffix, "null");
+	bool is_bool_tag = is_core_tag(prefix, suffix, "bool");
+	bool is_int_tag = is_core_tag(prefix, suffix, "int");
+	bool is_float_tag = is_core_tag(prefix, suffix, "float");
+	bool has_tag = prefix.len != 0 || suffix.len != 0;
+	bool core = !has_tag && style == PLAIN;
+
+	if ((core || is_null_tag) && is_null_text(v)) return Schema.NULL;
+	if ((core || is_bool_tag) && is_bool_text(v)) return Schema.BOOL;
+
+	bool overflow = false;
+	if (core || is_int_tag)
+	{
+		int128? i = int_of(v);
+		if (try i) return Schema.INT;
+		overflow = (@catch(i) != NOT_FOUND);
+	}
+	if (core || overflow || is_float_tag)
+	{
+		double? d = float_of(v);
+		if (try d) return Schema.FLOAT;
+	}
+	if (is_null_tag || is_bool_tag || is_int_tag || is_float_tag)
+	{
+		return INVALID_INPUT_FORMAT~;
+	}
+	return Schema.STR;
+}
