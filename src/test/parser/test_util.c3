@@ -46,7 +46,7 @@ fn String stderr_of(String yaml, bool verbose, fault* f = null)
 	defer libc::fclose(tmp);
 	File saved = *io::stderr();
 	*io::stderr() = file::from_handle(tmp);
-	YamlData? data = yaml::from_string(yaml, mem, verbose);
+	Yaml? data = yaml::from_string(yaml, mem, verbose);
 	*io::stderr() = saved;
 	if (catch err = data)
 	{

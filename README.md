@@ -28,17 +28,17 @@ byte, fails with `parser::INVALID_CHARACTER`.
 
 Read data from `String s`:
 ```
-YamlData data = yaml::from_string(s)!;
+Yaml data = yaml::from_string(s)!;
 ```
 
 Read data from `InStream in`:
 ```
-YamlData data = yaml::from_stream(in)!;
+Yaml data = yaml::from_stream(in)!;
 ```
 
 Read data directly from a file path:
 ```
-YamlData data = yaml::from_file("config.yaml")!;
+Yaml data = yaml::from_file("config.yaml")!;
 ```
 
 The `yaml::from_*` functions accept two additional arguments: a memory allocator and a flag
@@ -48,7 +48,7 @@ A YAML stream can hold several documents. `data.len()` is the number of document
 document is one `Object*`. An empty document is `null`. To declare an `Object*` variable, add
 `import std::collections::object;`.
 
-To access a value, use `YamlData.get` (or the `[]` operator) with a dotted path. Mapping keys
+To access a value, use `Yaml.get` (or the `[]` operator) with a dotted path. Mapping keys
 and sequence indexes are separated by `.`:
 
 ```yaml
@@ -207,7 +207,7 @@ database:
 ---
 second: document`;
 
-	YamlData cfg = yaml::from_string(s, tmem)!!;
+	Yaml cfg = yaml::from_string(s, tmem)!!;
 
 	io::printfn("documents: %d", cfg.len());
 	io::printfn("title: %s", cfg.get("title")!!);

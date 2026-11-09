@@ -47,7 +47,7 @@ fn int main(String[] args)
 				if (e.type == STREAM_END) return 0;
 			}
 		}
-		YamlData? data = yaml::from_string(input);
+		Yaml? data = yaml::from_string(input);
 		if (catch data) return 1;
 		defer data.free();
 		if (json)

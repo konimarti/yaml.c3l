@@ -10,7 +10,7 @@ const String TAG_INT = "tag:yaml.org,2002:int";
 const String TAG_FLOAT = "tag:yaml.org,2002:float";
 
 // What alias expansion and collection keys have cost in one from_* call, over all its
-// documents: YamlData keeps every document, so the limits apply to the whole stream.
+// documents: Yaml keeps every document, so the limits apply to the whole stream.
 struct Budget
 {
 	sz alias_nodes;   // nodes created by alias expansion (MAX_ALIAS_NODES)

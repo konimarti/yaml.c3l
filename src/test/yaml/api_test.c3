@@ -5,7 +5,7 @@ import yaml, yaml::parser, yaml::test_util;
 
 fn void get_path() @test => @pool()
 {
-	YamlData data = yaml::from_string("a:\n  b: [x, y]\n  c: 1\n", mem, false)!!;
+	Yaml data = yaml::from_string("a:\n  b: [x, y]\n  c: 1\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("a.b.0")!!.s, "x");
 	test::eq(data["a.b.1"]!!.s, "y");
@@ -18,21 +18,21 @@ fn void get_path() @test => @pool()
 
 fn void documents() @test => @pool()
 {
-	YamlData data = yaml::from_string("a\n---\nx: 1\n---\nc\n", mem, false)!!;
+	Yaml data = yaml::from_string("a\n---\nx: 1\n---\nc\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.len(), 3);
 	test::eq(data.get_in(1, "x")!!.i, 1);
 	test::eq(data.get("")!!.s, "a");
 	test::@error(data.get_in(3, "x"), NOT_FOUND);
 	test::eq(string::tformat("%s", data), "\"a\"\n{\"x\":1}\n\"c\"\n");
-	YamlData empty = yaml::from_string("", mem, false)!!;
+	Yaml empty = yaml::from_string("", mem, false)!!;
 	test::eq(empty.len(), 0);
 	empty.free();
 }
 
 fn void alias_copies() @test => @pool()
 {
-	YamlData data = yaml::from_string("a: &x {k: [1, 2]}\nb: *x\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: &x {k: [1, 2]}\nb: *x\n", mem, false)!!;
 	test::eq(data.get("b.k.1")!!.i, 2);
 	assert(data.get("a")!! != data.get("b")!!, "an alias must be a copy");
 	assert(data.get("a.k")!! != data.get("b.k")!!);
@@ -42,7 +42,7 @@ fn void alias_copies() @test => @pool()
 fn void alias_after_duplicate_key() @test => @pool()
 {
 	// the anchored node is replaced (and freed) by the duplicate key; the alias still works
-	YamlData data = yaml::from_string("a: &x [1]\na: 2\nb: *x\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: &x [1]\na: 2\nb: *x\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("b.0")!!.i, 1);
 	test::eq(data.get("a")!!.i, 2);
@@ -110,7 +110,7 @@ fn void nesting_limit() @test => @pool()
 	DString ok = dstring::temp();
 	ok.append_repeat('[', parser::MAX_DEPTH);
 	ok.append_repeat(']', parser::MAX_DEPTH);
-	YamlData data = yaml::from_string(ok.str_view(), mem, false)!!;
+	Yaml data = yaml::from_string(ok.str_view(), mem, false)!!;
 	data.free();
 }
 
@@ -139,7 +139,7 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 	TrackingAllocator tracker;
 	tracker.init(mem);
 	defer tracker.free();
-	YamlData data = yaml::from_string(s.str_view(), &tracker, false)!!;
+	Yaml data = yaml::from_string(s.str_view(), &tracker, false)!!;
 	defer data.free();
 	// 10 000 scalars: a copy per enclosing anchor would be 200 times as many allocations
 	assert(tracker.total_allocation_count() < 100_000, "nested anchors must not be copied");
@@ -151,7 +151,7 @@ fn void nested_anchors_are_not_copied() @test => @pool()
 // An anchored key and an anchored replaced value can still be aliased
 fn void anchors_outside_the_tree() @test => @pool()
 {
-	YamlData data = yaml::from_string("&k a: 1\nb: *k\nc: &v [1]\nc: 2\nd: *v\n", mem, false)!!;
+	Yaml data = yaml::from_string("&k a: 1\nb: *k\nc: &v [1]\nc: 2\nd: *v\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("b")!!.s, "a");
 	test::eq(data.get("c")!!.i, 2);
@@ -161,7 +161,7 @@ fn void anchors_outside_the_tree() @test => @pool()
 // An array index is plain digits
 fn void index_segments() @test => @pool()
 {
-	YamlData data = yaml::from_string("a: [x, y, z]\n", mem, false)!!;
+	Yaml data = yaml::from_string("a: [x, y, z]\n", mem, false)!!;
 	defer data.free();
 	test::eq(data.get("a.1")!!.s, "y");
 	foreach (path : (String[]){ "a.0x1", "a.+1", "a. 1", "a.", "a.-1", "a.3" }) test::@error(data.get(path), NOT_FOUND);

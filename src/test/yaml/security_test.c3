@@ -39,7 +39,7 @@ fn void nested_collection_keys() @test => @pool()
 	{
 		test::@error(yaml::from_string(s, mem, false), parser::LIMIT_EXCEEDED);
 	}
-	YamlData data = yaml::from_string("{[a, {b: c}]: 1}", mem, false)!!;
+	Yaml data = yaml::from_string("{[a, {b: c}]: 1}", mem, false)!!;
 	defer data.free();
 	test::eq(data.get(`["a",{"b":"c"}]`)!!.i, 1);
 }
@@ -114,7 +114,7 @@ fn void many_tag_directives() @test => @pool()
 // appear (before: the BOM became part of the first key, NUL was a blank, bad UTF-8 was copied)
 fn void input_validation() @test => @pool()
 {
-	YamlData data = yaml::from_string("\xef\xbb\xbfa: 1\n", mem, false)!!;
+	Yaml data = yaml::from_string("\xef\xbb\xbfa: 1\n", mem, false)!!;
 	test::eq(data.get("a")!!.i, 1);
 	data.free();
 	test::eq(test_util::events("\xef\xbb\xbf# comment\n%YAML 1.2\n--- a", " ", false)!!, "+DOC --- =VAL :a -DOC");
@@ -148,7 +148,7 @@ fn void plain_scalar_is_not_copied() @test => @pool()
 	test::eq(values[3], "multi line");
 }
 
-// The alias and key budgets cover all documents of a from_* call, because YamlData keeps
+// The alias and key budgets cover all documents of a from_* call, because Yaml keeps
 // them all (before: 20 documents that each stayed below the limits needed 2 GB)
 fn void limits_cover_the_stream() @test => @pool()
 {
@@ -186,7 +186,7 @@ fn void limits_cover_the_stream() @test => @pool()
 	}
 	test::@error(yaml::from_string(keys.str_view(), mem, false), parser::LIMIT_EXCEEDED);
 	// one such document is fine
-	YamlData data = yaml::from_string(keys.str_view()[:keys.str_view().index_of("\n")!! + 1], mem, false)!!;
+	Yaml data = yaml::from_string(keys.str_view()[:keys.str_view().index_of("\n")!! + 1], mem, false)!!;
 	data.free();
 }
 
@@ -196,7 +196,7 @@ fn void many_valid_collection_keys() @test => @pool()
 {
 	DString s = dstring::temp();
 	for (int i = 0; i < 60_000; i++) s.appendf("{a, b, c, d, e, f, g, %d}: v\n", i);
-	YamlData data = yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false)!!;
+	Yaml data = yaml::from_string(s.str_view(), &allocators::LIBC_ALLOCATOR, false)!!;
 	defer data.free();
 	test::eq(data.get("")!!.map.len(), 60_000);
 }

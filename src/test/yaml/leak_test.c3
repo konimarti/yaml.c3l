@@ -11,7 +11,7 @@ fn void check(String input, fault expected = {}) @private
 	TrackingAllocator tracker;
 	tracker.init(mem);
 	defer tracker.free();
-	YamlData? data = yaml::from_string(input, &tracker, false);
+	Yaml? data = yaml::from_string(input, &tracker, false);
 	if (catch err = data)
 	{
 		assert(expected && err == expected, "unexpected result for %s: %s", input, err);

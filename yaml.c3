@@ -8,13 +8,13 @@ import yaml::parser;
 
 faultdef INVALID_INPUT_FORMAT, UNDEFINED_ALIAS;
 
-struct YamlData (Printable)   // to_format prints JSON, one document per line
+struct Yaml (Printable)   // to_format prints JSON, one document per line
 {
 	List {Object*} docs;
 	Allocator allocator;
 }
 
-fn sz? YamlData.to_format(&self, Formatter* f) @dynamic
+fn sz? Yaml.to_format(&self, Formatter* f) @dynamic
 {
 	sz n = 0;
 	foreach (o : self.docs) n += write_json(f, o)! + f.print("\n")!;
@@ -98,12 +98,12 @@ fn sz? write_string(Formatter* f, String s) @private
 }
 
 // The parser emits exactly one node (maybe an empty scalar) per document.
-fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = true) => @pool()
+fn Yaml? from_string(String s, Allocator allocator = mem, bool verbose = true) => @pool()
 {
 	Parser parser;
 	parser.init(s, verbose);
 	Budget budget = { .max_key_text = parser::MAX_KEY_TEXT + parser::KEY_TEXT_PER_BYTE * s.len };   // one for all documents
-	YamlData data = { .allocator = allocator };
+	Yaml data = { .allocator = allocator };
 	data.docs.init(allocator);
 	defer catch data.free();
 	while (true)
@@ -121,14 +121,14 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 	}
 }
 
-fn YamlData? from_stream(InStream reader, Allocator allocator = mem, bool verbose = true) => @pool()
+fn Yaml? from_stream(InStream reader, Allocator allocator = mem, bool verbose = true) => @pool()
 {
 	ByteWriter writer;
 	io::copy_to(reader, writer.tinit())!;
 	return from_string(writer.str_view(), allocator, verbose);
 }
 
-fn YamlData? from_file(String filename, Allocator allocator = mem, bool verbose = true)
+fn Yaml? from_file(String filename, Allocator allocator = mem, bool verbose = true)
 {
 	File f = io::file::open(filename, "rb")!;
 	defer (void)f.close();
@@ -137,9 +137,9 @@ fn YamlData? from_file(String filename, Allocator allocator = mem, bool verbose 
 
 // "a.b.0": map keys and array indexes separated by '.'; document 0. An empty segment or an
 // index with a leading zero is NOT_FOUND; keys that are empty or contain '.' are not reachable.
-fn Object*? YamlData.get(&self, String path) @operator([]) => self.get_in(0, path);
+fn Object*? Yaml.get(&self, String path) @operator([]) => self.get_in(0, path);
 
-fn Object*? YamlData.get_in(&self, sz doc, String path)
+fn Object*? Yaml.get_in(&self, sz doc, String path)
 {
 	if (doc >= self.docs.len()) return NOT_FOUND~;
 	Object* o = self.docs[doc];
@@ -169,12 +169,12 @@ fn Object*? YamlData.get_in(&self, sz doc, String path)
 	return o;
 }
 
-fn sz YamlData.len(&self) @operator(len)
+fn sz Yaml.len(&self) @operator(len)
 {
 	return self.docs.len();
 }
 
-fn void YamlData.free(&self)
+fn void Yaml.free(&self)
 {
 	foreach (obj : self.docs) obj.free();
 	self.docs.free();

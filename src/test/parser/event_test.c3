@@ -50,7 +50,7 @@ fn void unmatched_bracket() @test => @pool()
 
 fn void from_string_single_doc() @test => @pool()
 {
-	YamlData data = yaml::from_string("a", mem, false)!!;
+	Yaml data = yaml::from_string("a", mem, false)!!;
 	defer data.free();
 	test::eq(data.len(), 1);
 	test::eq(data.get("")!!.s, "a");
