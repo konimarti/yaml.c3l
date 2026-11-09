@@ -17,26 +17,27 @@ c3c build yamlv >/dev/null || { echo "build failed"; exit 2; }
 bin=build/yamlv
 [ -x "$bin" ] || bin=build/yamlv.exe
 
-# a per-case timeout where the platform has one (not on stock macOS)
-tmo=""
-if command -v timeout >/dev/null 2>&1; then tmo="timeout 10"
-elif command -v gtimeout >/dev/null 2>&1; then tmo="gtimeout 10"; fi
+# a per-case timeout: timeout, gtimeout, or perl (stock macOS); none if all are missing
+if command -v timeout >/dev/null 2>&1; then tmo() { timeout 10 "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then tmo() { gtimeout 10 "$@"; }
+elif command -v perl >/dev/null 2>&1; then tmo() { perl -e 'alarm 10; exec @ARGV' "$@"; }
+else tmo() { "$@"; }; fi
 
 # the expected files may have been checked out with CRLF; so may the output on Windows
 nocr() { tr -d '\r'; }
 
 if [ -n "$one" ]; then
-	$tmo "$bin" -e < "$one/in.yaml" | nocr | diff -u <(nocr < "$one/test.event") -
+	tmo "$bin" -e < "$one/in.yaml" | nocr | diff -u <(nocr < "$one/test.event") -
 	exit $?
 fi
 
-cases=$(find test-suite -name in.yaml -not -path '*/tags/*' -not -path '*/name/*' | sort)
+cases=$(find -L test-suite -name in.yaml -not -path '*/tags/*' -not -path '*/name/*' | sort)
 [ -n "$cases" ] || { echo "no cases in test-suite/"; exit 2; }
 
 vp=0; vf=0; ep=0; ef=0; failed=()
 while read -r f; do
 	dir=${f%/in.yaml}; id=${dir#test-suite/}
-	out=$($tmo "$bin" -e < "$f" 2>/dev/null | nocr; exit "${PIPESTATUS[0]}"); rc=$?   # 1: a parse error; a crash or timeout is not
+	out=$(tmo "$bin" -e < "$f" 2>/dev/null | nocr; exit "${PIPESTATUS[0]}"); rc=$?   # 1: a parse error; a crash or timeout is not
 	if [ -f "$dir/error" ]; then
 		if [ $rc -eq 1 ]; then ep=$((ep+1)); else ef=$((ef+1)); failed+=("error $id"); fi
 	elif [ $rc -eq 0 ] && [ "$out" == "$(nocr < "$dir/test.event")" ]; then
@@ -57,8 +58,8 @@ if [ $json -eq 1 ]; then
 		if "$p" -c 'import json' >/dev/null 2>&1; then py=$p; break; fi
 	done
 	if [ -z "$py" ]; then
-		echo "json: skipped (python not found)"
-		exit $status
+		echo "json: python not found"
+		exit 2
 	fi
 	mkdir -p build; tmp=build/suite.$$; mkdir "$tmp" || exit 2
 	trap 'rm -rf "$tmp"' EXIT
@@ -80,7 +81,7 @@ PY
 		dir=${f%/in.yaml}
 		{ [ -f "$dir/error" ] || [ ! -f "$dir/in.json" ]; } && continue
 		jt=$((jt+1))
-		if $tmo "$bin" -j < "$f" > "$tmp/out.json" 2>/dev/null &&
+		if tmo "$bin" -j < "$f" > "$tmp/out.json" 2>/dev/null &&
 			"$py" -I "$tmp/cmp.py" "$dir/in.json" "$tmp/out.json" 2>/dev/null; then
 			jp=$((jp+1))
 		else
