@@ -37,7 +37,6 @@ fn int main(String[] args)
 			return 1;
 		}
 		char[] input_bytes = writer.array_view();
-		String input = writer.str_view();
 		if (events)
 		{
 			yaml2::parser::Parser p;

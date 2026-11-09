@@ -276,7 +276,7 @@ fn void Builder.init(&self, Tree* tree, Parser* parser, Allocator a, bool verbos
 	self.anchors.init(a, seed);
 }
 
-fn AliasInfo? Builder.alias_check(&self, uint tid)
+fn AliasInfo? Builder.alias_check(&self, Mark start, uint tid)
 {
 	NodeData* td = &self.tree.nodes[tid];
 	uint target_height = 0;
@@ -287,7 +287,10 @@ fn AliasInfo? Builder.alias_check(&self, uint tid)
 		target_height = tp.height;
 		if (tp.weight) target_weight = self.tree.weights[tp.weight];
 	}
-	if (self.depth + (int)target_height > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
+	if (self.depth + (int)target_height > parser::MAX_DEPTH)
+	{
+		return self.parser.error(start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
+	}
 
 	ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
 	ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
@@ -295,7 +298,7 @@ fn AliasInfo? Builder.alias_check(&self, uint tid)
 	self.tree.budget.alias_bytes = (sz)next_bytes;
 	if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
 	{
-		return parser::LIMIT_EXCEEDED~;
+		return self.parser.error(start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
 	}
 	return (AliasInfo){ target_height, target_weight };
 }
@@ -417,7 +420,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 
 			uint tid = target;
 			NodeData* td = &self.tree.nodes[tid];
-			AliasInfo ai = self.alias_check(tid)!;
+			AliasInfo ai = self.alias_check(e.start, tid)!;
 
 			if (td.kind == SCALAR)
 			{
@@ -433,7 +436,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 			}
 
 		case SEQUENCE_START:
-			if (++self.depth > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
+			if (++self.depth > parser::MAX_DEPTH) return self.parser.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			uint id = self.tree.new_node(SEQ, flags: flags | (e.explicit ? F_EXPLICIT : 0), key: key_span);
 			uint child_prev = 0;
 			uint max_child_height = 0;
@@ -476,7 +479,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 			return (NodeResult){ id, seq_height, seq_nodes, seq_bytes };
 
 		case MAPPING_START:
-			if (++self.depth > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
+			if (++self.depth > parser::MAX_DEPTH) return self.parser.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			uint map_depth = (uint)self.depth;
 			defer
 			{
@@ -547,7 +550,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					if (catch target) return self.parser.error(key_ev.start, "undefined alias", UNDEFINED_ALIAS)~;
 					uint tid = target;
 					NodeData* td = &self.tree.nodes[tid];
-					AliasInfo ai = self.alias_check(tid)!;
+					AliasInfo ai = self.alias_check(key_ev.start, tid)!;
 
 					if (td.kind == SCALAR)
 					{

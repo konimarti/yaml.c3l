@@ -96,10 +96,12 @@ fn void error_report_format() @test => @pool()
 
 fn void every_fault_is_reported() @test => @pool()
 {
-	String[*] inputs = { "\"a", "!x!y a", "!!int x", "a: *x", "[a", "|0\n", "- a\nb", "%YAML 2.0\n---\n" };
+	String[*] inputs = { "\"a", "!x!y a", "!!int x", "a: *x", "[a", "|0\n", "- a\nb", "%YAML 2.0\n---\n",
+		"a: &a [x,x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d,*d]\nf: &f [*e,*e,*e,*e,*e,*e,*e,*e,*e,*e]\ng: &g [*f,*f,*f,*f,*f,*f,*f,*f,*f,*f]\nh: &h [*g,*g,*g,*g,*g,*g,*g,*g,*g,*g]\n"
+	};
 	fault[*] faults = { parser::UNCLOSED_QUOTE, parser::UNDEFINED_TAG_HANDLE, yaml2::INVALID_INPUT_FORMAT,
 		yaml2::UNDEFINED_ALIAS, parser::UNCLOSED_FLOW, parser::INVALID_BLOCK_HEADER, parser::MISSING_COLON,
-		parser::INVALID_DIRECTIVE };
+		parser::INVALID_DIRECTIVE, parser::LIMIT_EXCEEDED };
 	foreach (i, input : inputs)
 	{
 		fault f;
