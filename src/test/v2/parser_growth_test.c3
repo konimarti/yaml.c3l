@@ -126,3 +126,47 @@ fn void error_excerpt_after_in_place_rewriting() @test => @pool()
 		if (e.type == STREAM_END) break;
 	}
 }
+
+// Minor 2: Error excerpt must stop at the end of the error's line (no bytes of next line).
+fn void error_excerpt_stops_at_line_end() @test => @pool()
+{
+	char[] buf1 = testing::writable("foo:\n  bar\ninvalid\n");
+	Parser p1;
+	p1.init_inplace(buf1, true, null);
+	defer p1.free();
+	while (true)
+	{
+		Event? e = p1.next();
+		if (catch e) break;
+		if (e.type == STREAM_END) break;
+	}
+
+	char[] buf2 = testing::writable("foo:\n  ba\r\nr\ninvalid\n");
+	Parser p2;
+	p2.init_inplace(buf2, true, null);
+	defer p2.free();
+	while (true)
+	{
+		Event? e = p2.next();
+		if (catch e) break;
+		if (e.type == STREAM_END) break;
+	}
+}
+
+// M4: NO_SPACE reports a clear error message when verbose.
+fn void nospace_error_reporting() @test => @pool()
+{
+	char[] buf = testing::writable("\"\x5cL\x5cL\"\n");
+	Parser p;
+	p.init_inplace(buf, true, null); // verbose = true
+	defer p.free();
+	(void)p.next()!!;
+	test::@error(p.next(), parser::NO_SPACE);
+
+	char[] buf_p = testing::writable("\"\x5cP\x5cP\"\n");
+	Parser p2;
+	p2.init_inplace(buf_p, true, null); // verbose = true
+	defer p2.free();
+	(void)p2.next()!!;
+	test::@error(p2.next(), parser::NO_SPACE);
+}

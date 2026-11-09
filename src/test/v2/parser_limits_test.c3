@@ -84,3 +84,38 @@ fn void tag_directives_limit() @test => @pool()
 	s17.append("---\n!t0!foo\n");
 	test::@error(parse_events(s17.str_view()), parser::LIMIT_EXCEEDED);
 }
+
+// M3: Column > 65535 fails LIMIT_EXCEEDED.
+fn void column_limit_exceeded() @test => @pool()
+{
+	// Column > 65535 before token
+	DString s = dstring::temp();
+	s.append_repeat(' ', 65536);
+	s.append("a: 1\n");
+	test::@error(parse_events(s.str_view()), parser::LIMIT_EXCEEDED);
+
+	// Long comments reset column count at newline and are accepted
+	DString s_comment = dstring::temp();
+	s_comment.append("# ");
+	s_comment.append_repeat('x', 70000);
+	s_comment.append("\na: 1\n");
+	(void)parse_events(s_comment.str_view())!!;
+}
+
+// M3: Tag handle length > 65535 fails LIMIT_EXCEEDED.
+fn void tag_handle_length_limit_exceeded() @test => @pool()
+{
+	// In-stream tag handle > 65535
+	DString s = dstring::temp();
+	s.append("--- !");
+	s.append_repeat('a', 65536);
+	s.append("!x v\n");
+	test::@error(parse_events(s.str_view()), parser::LIMIT_EXCEEDED);
+
+	// %TAG directive handle > 65535
+	DString s_dir = dstring::temp();
+	s_dir.append("%TAG !");
+	s_dir.append_repeat('a', 65536);
+	s_dir.append("! tag:example.com,2000:app/\n---\nv\n");
+	test::@error(parse_events(s_dir.str_view()), parser::LIMIT_EXCEEDED);
+}

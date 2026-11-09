@@ -26,25 +26,47 @@ fn bool? check_alloc_file(Path p, bool is_dir, any data)
 
 	sz alloc_start = state.tracker.total_allocation_count();
 	sz tmem_start = allocators::top_temp.used;
+	void* tmem_page_start = allocators::top_temp.last_page;
 
-	Parser parser;
-	parser.init_inplace(buf, false, null);
-	while (true)
+	mem::@scoped(state.tracker)
 	{
-		Event? e = parser.next();
-		if (catch e) break;
-		if (e.type == STREAM_END) break;
-	}
-	parser.free();
+		Parser parser;
+		parser.init_inplace(buf, false, null);
+		while (true)
+		{
+			Event? e = parser.next();
+			if (catch e) break;
+			if (e.type == STREAM_END) break;
+		}
+		parser.free();
+	};
 
 	sz alloc_end = state.tracker.total_allocation_count();
 	sz tmem_end = allocators::top_temp.used;
+	void* tmem_page_end = allocators::top_temp.last_page;
 
 	test::eq(alloc_end, alloc_start);
 	test::eq(tmem_end, tmem_start);
+	test::eq(tmem_page_end, tmem_page_start);
 
 	state.count++;
 	return false;
+}
+
+fn void deliberate_allocation_fails() @test => @pool()
+{
+	TrackingAllocator tracker;
+	tracker.init(mem);
+	defer tracker.free();
+
+	sz alloc_start = tracker.total_allocation_count();
+	mem::@scoped(&tracker)
+	{
+		int* p = mem::alloc(int);
+		mem::free(p);
+	};
+	sz alloc_end = tracker.total_allocation_count();
+	test::eq(alloc_end, alloc_start + 1);
 }
 
 fn void zero_allocation_across_suite() @test => @pool()

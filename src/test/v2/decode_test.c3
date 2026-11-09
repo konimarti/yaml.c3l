@@ -121,6 +121,21 @@ fn void second_document() @test => @pool()
 	Yaml y = parse("name: one\n---\nname: two\n");
 	test::eq(yaml2::decode{Config}(y, tmem, false)!!.name, "one");
 	test::eq(yaml2::decode_in{Config}(y, 1, tmem, false)!!.name, "two");
+	test::eq(yaml2::decode_borrowed_in{Config}(y, 1, tmem, false)!!.name, "two");
+	test::eq(y.decode_borrowed(Config, 1, tmem, false)!!.name, "two");
+
+	// D9: missing document returns NOT_FOUND
+	test::@error(y.doc(5).decode(Config, tmem, false), NOT_FOUND);
+	test::@error(y.doc(5).decode_borrowed(Config, tmem, false), NOT_FOUND);
+	test::@error(yaml2::decode_in{Config}(y, 5, tmem, false), NOT_FOUND);
+	test::@error(yaml2::decode_borrowed_in{Config}(y, 5, tmem, false), NOT_FOUND);
+	test::@error(y.decode_borrowed(Config, 5, tmem, false), NOT_FOUND);
+	test::@error(yaml2::decode_node{Config}(y.doc(5), tmem, false), NOT_FOUND);
+	test::@error(yaml2::decode_borrowed{Config}(y.doc(5), tmem, false), NOT_FOUND);
+
+	Yaml y_empty = parse("");
+	test::@error(y_empty.doc(0).decode(Config, tmem, false), NOT_FOUND);
+	test::@error(y_empty.doc(0).decode_borrowed(Config, tmem, false), NOT_FOUND);
 }
 
 fn void free(Allocator a, void* p) @private => alloc::free(a, p);
