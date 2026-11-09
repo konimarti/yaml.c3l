@@ -9,7 +9,8 @@ language](http://c3-lang.org).
   float, string).
 * Passes all 402 cases of the [yaml-test-suite](https://github.com/yaml/yaml-test-suite)
   (events and errors), and all 279 JSON comparisons.
-* Limits alias expansion and nesting depth, so "billion laughs" inputs fail fast.
+* Limits alias expansion, collection keys and nesting depth, so "billion laughs" inputs fail
+  fast.
 * Includes a command-line tool `yamlv` to validate YAML, print the event stream, or convert
   to JSON.
 
@@ -89,6 +90,8 @@ The limits for untrusted input are constants in `yaml::parser`. Exceeding one fa
   that come from aliases.
 * `parser::MAX_ALIAS_NODES` (1,000,000): nodes created by alias expansion in a single
   document.
+* `parser::MAX_KEY_TEXT` (4 MiB): the JSON text of all collection keys (`[a, b]: c`) in a
+  single document.
 
 ### Command-line tool
 

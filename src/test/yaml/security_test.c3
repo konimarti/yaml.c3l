@@ -35,3 +35,31 @@ fn void long_queued_key() @test => @pool()
 	data.free();
 	assert(start.to_now() < (NanoDuration)500_000_000, "the token queue must be linear");
 }
+
+// S1: a collection key is its JSON text, and a nested one is escaped again at every level
+// (before: 64 bytes of '{' needed 2.6 GB and ended in an uncatchable OUT_OF_MEMORY panic)
+fn void nested_collection_keys() @test => @pool()
+{
+	DString flow = dstring::temp();
+	flow.append_repeat('{', 24);
+	flow.append(`"a"`);
+	flow.append_repeat('}', 24);
+	DString block = dstring::temp();
+	block.append_repeat("? ", 24);
+	block.append("a\n");
+	// many keys that are each well below the limit (before: 200 KB of input took 800 MB)
+	DString many = dstring::temp();
+	many.append("{");
+	for (int i = 0; i < 1000; i++) many.appendf("{{{{{{{{{{{{{{a}}}}}}}}}}}}}}: %d, ", i);
+	many.append("}");
+	Clock start = clock::now();
+	foreach (s : (String[]){ flow.str_view(), block.str_view(), many.str_view() })
+	{
+		test::@error(yaml::from_string(s, mem, false), parser::LIMIT_EXCEEDED);
+	}
+	assert(start.to_now() < (NanoDuration)500_000_000, "the limit must be hit early");
+	YamlData data = yaml::from_string("{[a, {b: c}]: 1}", mem, false)!!;
+	defer data.free();
+	test::eq(data.get(`["a",{"b":"c"}]`)!!.i, 1);
+}
+

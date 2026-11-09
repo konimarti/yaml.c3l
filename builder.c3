@@ -15,6 +15,7 @@ struct Builder
 	Parser* p;
 	Allocator a;
 	sz alias_nodes;
+	sz key_text;
 	int depth;
 	HashMap {String, Object*} anchors;   // the anchored nodes (owned by the tree or by `dropped`)
 	List {Object*} dropped;              // nodes taken out of the tree: replaced values and key nodes
@@ -89,7 +90,11 @@ fn String? Builder.key(&self, Event e)
 	if (k.is_null()) return "";
 	if (e.type == SCALAR) return e.value;
 	if (k.is_string()) return k.s;
-	return string::tformat("%s", (Json){ k });
+	// a nested collection key is escaped again at every level: the text can double per level
+	String text = string::tformat("%s", (Json){ k });
+	self.key_text += text.len;
+	if (self.key_text > parser::MAX_KEY_TEXT) return self.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+	return text;
 }
 
 // Deep copy for an alias (sharing an Object* would make Object.free free it twice). Every
