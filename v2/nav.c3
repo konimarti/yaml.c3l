@@ -73,7 +73,7 @@ fn Node Seq.get_at(&self, sz i) @operator([])
 	while ((sz)self.index < i && self.cursor != 0)
 	{
 		self.cursor = self.node.tree.nodes[self.cursor].next;
-		self.node.tree.hops++;
+		$if env::TESTING: self.node.tree.hops++; $endif
 		self.index++;
 	}
 	if (self.cursor == 0) return (Node){};
@@ -95,18 +95,18 @@ fn Entry Map.get_at(&self, sz i) @operator([])
 		while (self.cursor != 0 && (self.node.tree.nodes[self.cursor].flags & F_SHADOWED) != 0)
 		{
 			self.cursor = self.node.tree.nodes[self.cursor].next;
-			self.node.tree.hops++;
+			$if env::TESTING: self.node.tree.hops++; $endif
 		}
 		self.index = 0;
 	}
 	while ((sz)self.index < i && self.cursor != 0)
 	{
 		self.cursor = self.node.tree.nodes[self.cursor].next;
-		self.node.tree.hops++;
+		$if env::TESTING: self.node.tree.hops++; $endif
 		while (self.cursor != 0 && (self.node.tree.nodes[self.cursor].flags & F_SHADOWED) != 0)
 		{
 			self.cursor = self.node.tree.nodes[self.cursor].next;
-			self.node.tree.hops++;
+			$if env::TESTING: self.node.tree.hops++; $endif
 		}
 		self.index++;
 	}
@@ -129,6 +129,38 @@ fn Entry Map.get_at(&self, sz i) @operator([])
 }
 
 // ---- the document list ----
+struct Docs
+{
+	Tree* tree;
+	uint index;
+	uint cursor;
+}
+
+fn sz Docs.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
+
+fn Node Docs.get_at(&self, sz i) @operator([])
+{
+	if (!self.tree || i >= (sz)self.tree.ndocs) return (Node){};
+	uint first = self.tree.nodes[0].first;
+	if (!first) return (Node){};
+
+	if (self.cursor == 0 || i < (sz)self.index)
+	{
+		self.cursor = first;
+		self.index = 0;
+	}
+	while ((sz)self.index < i && self.cursor != 0)
+	{
+		self.cursor = self.tree.nodes[self.cursor].next;
+		$if env::TESTING: self.tree.hops++; $endif
+		self.index++;
+	}
+	if (self.cursor == 0) return (Node){};
+	return (Node){ self.tree, self.cursor };
+}
+
+fn Docs Yaml.docs(&self) => (Docs){ .tree = self.tree };
+
 fn sz Yaml.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
 
 fn Node Yaml.doc(&self, sz i)
@@ -136,11 +168,22 @@ fn Node Yaml.doc(&self, sz i)
 	if (!self.tree || i >= (sz)self.tree.ndocs) return (Node){};
 	uint child = self.tree.nodes[0].first;
 	sz cur = 0;
-	while (child != 0)
+	if (self.tree.last_doc_id != 0 && i >= (sz)self.tree.last_doc_idx)
 	{
-		if (cur == i) return (Node){ self.tree, child };
+		child = self.tree.last_doc_id;
+		cur = (sz)self.tree.last_doc_idx;
+	}
+	while (child != 0 && cur < i)
+	{
 		child = self.tree.nodes[child].next;
+		$if env::TESTING: self.tree.hops++; $endif
 		cur++;
+	}
+	if (child != 0)
+	{
+		self.tree.last_doc_idx = (uint)cur;
+		self.tree.last_doc_id = child;
+		return (Node){ self.tree, child };
 	}
 	return (Node){};
 }
@@ -231,7 +274,7 @@ fn Node Node.at(self, sz index)
 	while (child != 0)
 	{
 		if (cur == index) return (Node){ self.tree, child };
-		self.tree.hops++;
+		$if env::TESTING: self.tree.hops++; $endif
 		child = self.tree.nodes[child].next;
 		cur++;
 	}

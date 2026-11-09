@@ -71,6 +71,8 @@ struct Tree
 	uint ndocs;
 	Budget budget;
 	ulong hops;         // sibling links followed by navigation: lets tests prove O(n) iteration
+	uint last_doc_idx;  // cached index of last accessed stream document
+	uint last_doc_id;   // cached node id of last accessed stream document
 }
 
 // A new tree with only the stream root. `input` (may be empty) is the text plain spans refer to;
@@ -119,6 +121,11 @@ fn uint Tree.new_node(&self, NodeKind kind, ScalarStyle style = PLAIN, Schema sc
 // counts the child in parent.val.len (MAP/SEQ) or ndocs (STREAM). The caller keeps `prev`.
 fn void Tree.append_after(&self, uint parent, uint prev, uint child)
 {
+	if (parent == 0)
+	{
+		self.last_doc_idx = 0;
+		self.last_doc_id = 0;
+	}
 	self.nodes[child].parent = parent;
 	if (prev)
 	{
