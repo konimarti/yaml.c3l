@@ -534,7 +534,8 @@ fn void? Scanner.fetch_plain(&self)
 
 fn String Scanner.scan_plain(&self)
 {
-	DString buf = dstring::temp();
+	String first;     // the first line: a slice of the input, no copy
+	DString buf;      // created only when the scalar continues on another line
 	bool flow = self.flow_level > 0;
 	int breaks = 0;   // line breaks between the previous text and this line
 	while (true)
@@ -551,13 +552,18 @@ fn String Scanner.scan_plain(&self)
 			self.advance();
 			if (!c.is_blank()) end = self.mark.pos;
 		}
-		if (end > start)
+		if (end > start && !breaks)
 		{
+			first = self.s[start:end - start];
+		}
+		else if (end > start)
+		{
+			if (!buf) buf = dstring::temp(first);
 			if (breaks == 1) buf.append_char(' ');
 			for (int i = 1; i < breaks; i++) buf.append_char('\n');
 			buf.append(self.s[start:end - start]);
 		}
-		if (self.peek() != '\n') return buf.str_view();
+		if (self.peek() != '\n') return buf ? buf.str_view() : first;
 		// look ahead over line breaks and blank lines to the next text
 		sz i = self.mark.pos;
 		sz line_start;
@@ -573,7 +579,7 @@ fn String Scanner.scan_plain(&self)
 		}
 		if (i >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[i] == '#' || self.is_marker(line_start))
 		{
-			return buf.str_view();
+			return buf ? buf.str_view() : first;
 		}
 		while (self.mark.pos < i) self.advance();
 		breaks = n;

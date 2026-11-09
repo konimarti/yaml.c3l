@@ -148,3 +148,23 @@ fn void input_validation() @test => @pool()
 	test::eq(test_util::scalar("a\tb \u0085 \u00e9 \U0001F600")!!, "a\tb \u0085 \u00e9 \U0001F600");
 	test::eq(test_util::scalar(`"\0"`)!!, "\0");
 }
+
+// P1: a single-line plain scalar is a slice of the input, not a tmem copy (before: every
+// scalar was copied, 641 MB RSS for a 34 MB file)
+fn void plain_scalar_is_not_copied() @test => @pool()
+{
+	String input = "key: some value\nnext: multi\n  line\n";
+	Parser p;
+	p.init(input, false);
+	String[4] values;
+	int n;
+	while (true)
+	{
+		Event e = p.next()!!;
+		if (e.type == STREAM_END) break;
+		if (e.type == SCALAR) values[n++] = e.value;
+	}
+	test::eq(n, 4);
+	assert(values[0].ptr == &input[0] && values[1].ptr == &input[5] && values[2].ptr == &input[16]);
+	test::eq(values[3], "multi line");
+}
