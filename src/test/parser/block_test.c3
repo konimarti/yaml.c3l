@@ -124,3 +124,42 @@ fn void missing_colon() @test => @pool()
 	}
 	assert(got_error);
 }
+
+// M2 review fixes
+
+fn void from_string_nested_error() @test => @pool()
+{
+	test::@error(yaml::from_string("- a\nfoo\n", mem, false), parser::MISSING_COLON);
+}
+
+fn void plain_blank_lines() @test => @pool()
+{
+	test::eq(events("a\n\n\nb\n")!!, "+STR\n+DOC\n=VAL :a\\n\\nb\n-DOC\n-STR");
+}
+
+fn void plain_whitespace_lines() @test => @pool()
+{
+	test::eq(events("a\n  \n  \nb\n")!!, "+STR\n+DOC\n=VAL :a\\n\\nb\n-DOC\n-STR");
+}
+
+fn void plain_crlf() @test => @pool()
+{
+	test::eq(events("a\r\nb\r\n")!!, "+STR\n+DOC\n=VAL :a b\n-DOC\n-STR");
+}
+
+fn void error_line_after_blank_lines() @test => @pool()
+{
+	Parser p;
+	p.init("top:\n  a: 1\n\n\n\nbad\n", false);
+	while (true)
+	{
+		Event? e = p.next();
+		if (catch f = e)
+		{
+			test::eq(f, parser::MISSING_COLON);
+			test::eq(p.scanner.error_mark.line, 6);
+			return;
+		}
+		assert(e.type != STREAM_END, "expected an error");
+	}
+}

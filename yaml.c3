@@ -54,67 +54,30 @@ fn Object*? build_node(Parser* p, Event e, Allocator a)
 				Event key_ev = p.next()!;
 				if (key_ev.type == MAPPING_END) return map;
 				if (key_ev.type != SCALAR) return parser::SYNTAX_ERROR~;
-				Event val_ev = p.next()!;
-				if (val_ev.type == MAPPING_END)
-				{
-					map.set(key_ev.value, object::new_null());
-					return map;
-				}
-				Object* val = build_node(p, val_ev, a)!;
-				map.set(key_ev.value, val);
+				map.set(key_ev.value, build_node(p, p.next()!, a)!);
 			}
 		default: return parser::SYNTAX_ERROR~;
 	}
 }
 
+// The parser emits exactly one node (maybe an empty scalar) per document.
 fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = true) => @pool()
 {
 	Parser p;
 	p.init(s, verbose);
-	
-	YamlData data;
-	data.docs.init(allocator, 16);
-	data.allocator = allocator;
-	
-	Object* current_doc = null;
-	
+	YamlData data = { .allocator = allocator };
+	data.docs.init(allocator);
+	defer catch data.free();
 	while (true)
 	{
-		Event? ev = p.next();
-		if (catch err = ev)
-		{
-			defer catch data.free();
-			return err~;
-		}
-		
+		Event ev = p.next()!;
 		switch (ev.type)
 		{
-			case STREAM_START: break;
-			case STREAM_END:
-				if (current_doc != null) data.docs.push(current_doc);
-				return data;
-			case DOCUMENT_START:
-				if (ev.explicit)
-				{
-					if (current_doc != null)
-					{
-						data.docs.push(current_doc);
-						current_doc = null;
-					}
-				}
-				break;
-			case DOCUMENT_END:
-				if (current_doc == null) current_doc = object::new_null();
-				data.docs.push(current_doc);
-				current_doc = null;
-				break;
+			case STREAM_END: return data;
 			case SCALAR:
 			case SEQUENCE_START:
-			case MAPPING_START:
-				if (current_doc != null) current_doc.free();
-				current_doc = build_node(&p, ev, allocator)!!;
-				break;
-			default: defer catch data.free(); return parser::SYNTAX_ERROR~;
+			case MAPPING_START: data.docs.push(build_node(&p, ev, allocator)!);
+			default: break;
 		}
 	}
 }

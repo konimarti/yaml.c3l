@@ -1,5 +1,4 @@
-// M2 parser skeleton (reviewer). Replaces parser.c3 completely (state stack, no queued_token).
-// Event, EventType, Mark, ScalarStyle are in event.c3 already.
+// Parser: tokens -> events (libyaml-style state machine with a state stack).
 module yaml::parser;
 import std::io, std::collections::list;
 

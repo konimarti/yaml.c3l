@@ -1,8 +1,4 @@
-// M2 scanner skeleton (reviewer). Compiles with c3c 0.8.6 together with event.c3 and the
-// parser skeleton; a prototype built from it passed all 73 cases in milestones/M2.valid and
-// all 28 in milestones/M2.errors. Use it as scanner.c3: keep M1's report_error (source line +
-// caret) inside Scanner.error, port M1's plain-scalar folding into scan_plain, and delete
-// M1's next_token/peek_token/fetch_more_tokens/skip_whitespace_and_comments.
+// Scanner: characters -> tokens (libyaml style: indent stack, simple keys, one token queue).
 module yaml::parser;
 import std::io, std::collections::list;
 
@@ -43,13 +39,33 @@ struct Scanner
 	bool compact_ok;           // true at line start and after '-', '?', ':'(explicit) + spaces
 	bool tab_indent;           // current line has a TAB before its first token
 	SimpleKey key;             // M4: List {SimpleKey}, one per flow level
+	Mark error_mark;           // position of the last reported error
 }
 
 fn void Scanner.init(&self, String s, bool verbose = true)
 {
-	*self = { .s = s, .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
+	*self = { .s = normalize_breaks(s), .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
 	self.tokens.tinit();
 	self.indents.tinit();
+}
+
+// "\r\n" and "\r" are line breaks: rewrite them as "\n" (a tmem copy, only if needed).
+fn String normalize_breaks(String s)
+{
+	if (!s.contains_char('\r')) return s;
+	DString out = dstring::temp();
+	foreach (i, c : s)
+	{
+		if (c != '\r')
+		{
+			out.append_char(c);
+		}
+		else if (i + 1 >= s.len || s[i + 1] != '\n')
+		{
+			out.append_char('\n');
+		}
+	}
+	return out.str_view();
 }
 
 fn int Scanner.col(&self) @inline => self.mark.column - 1;
@@ -78,30 +94,16 @@ fn void Scanner.advance(&self)
 
 fn void? Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 {
+	self.error_mark = m;
 	if (self.verbose)
 	{
-		io::eprintfn("YAML ERROR -- Line %d, Col %d: %s", m.line, m.column, msg)!!;
-		sz line_start = 0;
-		int current_line = 1;
-		for (sz i = 0; i < m.pos; i++)
-		{
-			if (self.s[i] == '\n')
-			{
-				line_start = i + 1;
-				current_line++;
-			}
-		}
-		sz line_end = line_start;
-		while (line_end < self.s.len && self.s[line_end] != '\n') line_end++;
-		if (line_start < self.s.len) io::eprintn(self.s[line_start .. line_end].trim_right());
-		if (m.column > 1)
-		{
-			io::eprintfn("%*s^", m.column - 1, "");
-		}
-		else
-		{
-			io::eprintfn("^");
-		}
+		sz start = m.pos;
+		while (start > 0 && self.s[start - 1] != '\n') start--;
+		sz end = m.pos;
+		while (end < self.s.len && self.s[end] != '\n') end++;
+		(void)io::eprintfn("YAML ERROR -- Line %d, Col %d: %s", m.line, m.column, msg);
+		(void)io::eprintn(self.s[start:end - start]);
+		(void)io::eprintfn("%*s^", m.column - 1, "");
 	}
 	return f~;
 }
@@ -351,101 +353,73 @@ fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 }
 
 // '---' or '...' at column 1 followed by a blank or EOF
-fn bool Scanner.at_marker(&self)
+fn bool Scanner.at_marker(&self) => self.mark.column == 1 && self.is_marker(self.mark.pos);
+
+// '---' or '...' starting at byte `i` (which must be at a line start) followed by a blank or EOF
+fn bool Scanner.is_marker(&self, sz i)
 {
-	char c = self.peek();
-	return self.mark.column == 1 && (c == '-' || c == '.') && self.peek(1) == c && self.peek(2) == c && is_blankz(self.peek(3));
+	if (i + 3 > self.s.len) return false;
+	char c = self.s[i];
+	return (c == '-' || c == '.') && self.s[i + 1] == c && self.s[i + 2] == c
+		&& (i + 3 == self.s.len || is_blankz(self.s[i + 3]));
 }
 
-// Plain scalar (DESIGN.md "Plain scalars"). Reuse the M1 folding code, but:
-//  - continuation lines need column > indent (self.col() >= self.indent + 1),
-//  - a line starting with '#', a document marker, or EOF ends it (do not consume that line),
-//  - ': ' / ':'EOL and ' #' end it on any line,
-//  - crossing a line break sets simple_key_allowed = true (block context),
-//  - trailing blanks are never part of the value.
+// Plain scalar (DESIGN.md "Plain scalars"). Ends at ': ', ':'EOL, ' #', a line break followed by
+// a line at column <= indent, a comment line, a document marker, or EOF. The line breaks that end
+// it are not consumed (scan_to_next_token does that).
 fn void? Scanner.fetch_plain(&self)
 {
 	self.save_simple_key()!;
-	self.simple_key_allowed = true;
 	Mark m = self.mark;
-	String value = self.scan_plain()!;
+	int line = m.line;
+	String value = self.scan_plain();
+	self.simple_key_allowed = self.mark.line != line;   // crossed a line break
 	self.compact_ok = false;
 	self.push(T_SCALAR, m, value);
 }
 
-fn String trim_buf(DString buf)
-{
-	sz i = buf.len();
-	while (i > 0 && (buf[i - 1] == ' ' || buf[i - 1] == '\t')) i--;
-	if (i < buf.len())
-	{
-		DString t = dstring::temp();
-		for (sz j = 0; j < i; j++) t.append_char(buf[j]);
-		return t.str_view();
-	}
-	return buf.str_view();
-}
-
-fn String? Scanner.scan_plain(&self)
+fn String Scanner.scan_plain(&self)
 {
 	DString buf = dstring::temp();
-	bool first_line = true;
-	
-	while (self.mark.pos < self.s.len)
+	int breaks = 0;   // line breaks between the previous text and this line
+	while (true)
 	{
-		char c = self.peek();
-		if (c == '\n')
+		// the text of one line, without trailing blanks
+		sz start = self.mark.pos;
+		sz end = start;
+		while (!self.at_end())
 		{
-			// Trim trailing whitespace
-			sz i = buf.len();
-			while (i > 0 && (buf[i - 1] == ' ' || buf[i - 1] == '\t')) i--;
-			if (i < buf.len())
-			{
-				// Trim the buffer
-				DString trimmed = dstring::temp();
-				for (sz j = 0; j < i; j++) trimmed.append_char(buf[j]);
-				buf = trimmed;
-			}
-			
+			char c = self.peek();
+			if (c == '\n' || (c == ':' && is_blankz(self.peek(1)))) break;
+			if (c == '#' && self.mark.pos > start && (self.s[self.mark.pos - 1] == ' ' || self.s[self.mark.pos - 1] == '\t')) break;
 			self.advance();
-			if (self.at_end()) return trim_buf(buf);
-			if (self.mark.column == 1 && self.at_marker()) return trim_buf(buf);
-			if (self.peek() == '#' && self.mark.column == 1) return trim_buf(buf);
-			sz save_pos = self.mark.pos;
-			int save_col = self.mark.column;
-			while (self.peek() == ' ' || self.peek() == '\t') self.advance();
-			if (self.peek() == '#') { self.mark.pos = save_pos; self.mark.column = save_col; return trim_buf(buf); }
-			if (self.peek() == '\n')
-			{
-				while (self.peek() == '\n') self.advance();
-				if (self.at_end()) return trim_buf(buf);
-				while (self.peek() == ' ' || self.peek() == '\t') self.advance();
-				if (self.col() > self.indent)
-				{
-					if (!first_line && buf.len() > 0) buf.append_char('\n');
-					first_line = false;
-					continue;
-				}
-				self.mark.pos = save_pos; self.mark.column = save_col; return trim_buf(buf);
-			}
-			if (self.col() > self.indent)
-			{
-				if (!first_line && buf.len() > 0) buf.append_char(' ');
-				first_line = false;
-				continue;
-			}
-			self.mark.pos = save_pos; self.mark.column = save_col; return trim_buf(buf);
+			if (c != ' ' && c != '\t') end = self.mark.pos;
 		}
-		if (c == '#' && (self.mark.column == 1 || (self.mark.pos > 0 && (self.s[self.mark.pos - 1] == ' ' || self.s[self.mark.pos - 1] == '\t')))) return trim_buf(buf);
-		if (c == ':' && self.mark.pos + 1 <= self.s.len)
+		if (end > start)
 		{
-			char n = self.peek(1);
-			if (n == ' ' || n == '\n' || n == '\t' || n == '\r' || n == '\0') return trim_buf(buf);
+			if (breaks == 1) buf.append_char(' ');
+			for (int i = 1; i < breaks; i++) buf.append_char('\n');
+			buf.append(self.s[start:end - start]);
 		}
-		if (self.mark.column == 1 && self.at_marker()) return trim_buf(buf);
-		buf.append_char(c);
-		first_line = false;
-		self.advance();
+		if (self.peek() != '\n') return buf.str_view();
+		// look ahead over line breaks and blank lines to the next text
+		sz i = self.mark.pos;
+		sz line_start;
+		int n = 0;
+		while (i < self.s.len && (self.s[i] == '\n' || self.s[i] == ' ' || self.s[i] == '\t'))
+		{
+			if (self.s[i] == '\n')
+			{
+				n++;
+				line_start = i + 1;
+			}
+			i++;
+		}
+		if (i >= self.s.len || (int)(i - line_start) <= self.indent || self.s[i] == '#' || self.is_marker(line_start))
+		{
+			return buf.str_view();
+		}
+		while (self.mark.pos < i) self.advance();
+		breaks = n;
 	}
-	return trim_buf(buf);
 }
