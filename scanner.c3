@@ -14,8 +14,8 @@ enum TokenType : char
 	T_ANCHOR, T_ALIAS, T_TAG, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE, T_RESERVED_DIRECTIVE
 }
 
-const char FLAG_IMPLIED_MAP = 1;
-const char FLAG_IMPLIED_KEY = 2;
+const char FLAG_IMPLIED_MAP = 8;
+const char FLAG_IMPLIED_KEY = 16;
 
 struct Token
 {
@@ -23,18 +23,21 @@ struct Token
 	uint handle_off;
 	uint pos;
 	uint line;
-	ushort col;
+	uint col;
 	ushort handle_len;
 	TokenType type;
-	ScalarStyle style;
-	char flags;
-	char pad;
+	char style_flags;
 }
 
 fn Mark Token.start(self) @inline => { (sz)self.pos, (int)self.line, (int)self.col };
 fn Span Token.handle(self) @inline => { self.handle_off, (uint)self.handle_len };
-fn bool Token.implied_mapping_start(self) @inline => (self.flags & FLAG_IMPLIED_MAP) != 0;
-fn bool Token.implied_key(self) @inline => (self.flags & FLAG_IMPLIED_KEY) != 0;
+fn ScalarStyle Token.style(self) @inline => (ScalarStyle)(self.style_flags & 7);
+fn bool Token.implied_mapping_start(self) @inline => (self.style_flags & FLAG_IMPLIED_MAP) != 0;
+fn bool Token.implied_key(self) @inline => (self.style_flags & FLAG_IMPLIED_KEY) != 0;
+fn void Token.clear_implied_mapping_start(&self) @inline => self.style_flags &= (char)~FLAG_IMPLIED_MAP;
+fn void Token.clear_implied_key(&self) @inline => self.style_flags &= (char)~FLAG_IMPLIED_KEY;
+fn void Token.set_implied_mapping_start(&self) @inline => self.style_flags |= FLAG_IMPLIED_MAP;
+fn void Token.set_implied_key(&self) @inline => self.style_flags |= FLAG_IMPLIED_KEY;
 
 const char KEY_POSSIBLE   = 1;
 const char KEY_REQUIRED   = 2;
@@ -47,9 +50,9 @@ struct SimpleKey
 	sz token_number;   // absolute token index (tokens_taken + position after queue head)
 	uint pos;
 	uint line;
-	ushort col;
+	uint col;
 	char flags;
-	char pad;
+	char[3] pad;
 }
 
 fn Mark SimpleKey.mark(self) @inline => { (sz)self.pos, (int)self.line, (int)self.col };
@@ -252,7 +255,6 @@ fn sz Scanner.ring_index(&self, sz number) @inline
 fn void? Scanner.push(&self, TokenType type, Mark m, Span value = {}, ScalarStyle style = PLAIN, Span handle = {})
 {
 	if (self.count >= QUEUE_SIZE) return self.error(m, "token queue overflow", LIMIT_EXCEEDED)~;
-	if (m.column > 65535) return self.error(m, "column limit exceeded", LIMIT_EXCEEDED)~;
 	if (handle.len > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
 	uint idx = (self.head + self.count) % QUEUE_SIZE;
 	self.tokens[idx] = {
@@ -261,9 +263,9 @@ fn void? Scanner.push(&self, TokenType type, Mark m, Span value = {}, ScalarStyl
 		.handle_len = (ushort)handle.len,
 		.pos = (uint)m.pos,
 		.line = (uint)m.line,
-		.col = (ushort)m.column,
+		.col = (uint)m.column,
 		.type = type,
-		.style = style,
+		.style_flags = (char)style,
 	};
 	self.count++;
 }
@@ -274,8 +276,8 @@ fn Token? Scanner.next_token(&self)
 	Token* head_tok = &self.tokens[self.head];
 	switch
 	{
-		case head_tok.implied_mapping_start(): head_tok.flags &= (char)~FLAG_IMPLIED_MAP;
-		case head_tok.implied_key(): head_tok.flags &= (char)~FLAG_IMPLIED_KEY;
+		case head_tok.implied_mapping_start(): head_tok.clear_implied_mapping_start();
+		case head_tok.implied_key(): head_tok.clear_implied_key();
 		default:
 			self.tokens_taken++;
 			self.head = (self.head + 1) % QUEUE_SIZE;
@@ -421,7 +423,6 @@ fn void? Scanner.scan_to_next_token(&self)
 			break;
 		}
 	}
-	if (!self.at_end() && self.mark.column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 }
 
 // ---- indentation ---------------------------------------------------------
@@ -429,7 +430,6 @@ fn void? Scanner.scan_to_next_token(&self)
 fn bool? Scanner.roll_indent(&self, int column)
 {
 	if (self.indent >= column) return false;
-	if (column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 	if (self.indents_len >= MAX_DEPTH) return self.error(self.mark, "indentation depth limit exceeded", LIMIT_EXCEEDED)~;
 	self.indents[self.indents_len++] = self.indent;
 	self.indent = column;
@@ -450,7 +450,6 @@ fn void? Scanner.unroll_indent(&self, int column)
 fn void? Scanner.save_simple_key(&self)
 {
 	if (!self.simple_key_allowed) return;
-	if (self.mark.column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 	self.remove_simple_key()!;
 	SimpleKey* k = self.simple_key();
 	char flags = KEY_POSSIBLE;
@@ -462,7 +461,7 @@ fn void? Scanner.save_simple_key(&self)
 		.token_number = self.tokens_taken + (sz)self.count,
 		.pos = (uint)self.mark.pos,
 		.line = (uint)self.mark.line,
-		.col = (ushort)self.mark.column,
+		.col = (uint)self.mark.column,
 		.flags = flags,
 	};
 }
@@ -534,10 +533,10 @@ fn void? Scanner.fetch_value(&self)
 			}
 		}
 		Token* key = &self.tokens[self.ring_index(k.token_number)];
-		key.flags |= FLAG_IMPLIED_KEY;
+		key.set_implied_key();
 		if (!self.flow_level)
 		{
-			if (self.roll_indent((int)k.col - 1)!) key.flags |= FLAG_IMPLIED_MAP;
+			if (self.roll_indent((int)k.col - 1)!) key.set_implied_mapping_start();
 		}
 		k.flags &= (char)~KEY_POSSIBLE;
 		self.simple_key_allowed = false;

@@ -1,4 +1,4 @@
-// Tests for parser limits (M2, M3).
+// Tests for parser limits.
 // MAX_DEPTH = 256 for collections and block indents; 257 => LIMIT_EXCEEDED.
 // MAX_TAG_DIRECTIVES = 16; 17th => LIMIT_EXCEEDED.
 module yaml::parser_test;
@@ -6,6 +6,7 @@ module yaml::parser_test;
 import std::io;
 import yaml::parser;
 import yaml::testing;
+import yaml;
 
 fn void depth_256_and_257_flow() @test => @pool()
 {
@@ -85,16 +86,14 @@ fn void tag_directives_limit() @test => @pool()
 	test::@error(parse_events(s17.str_view()), parser::LIMIT_EXCEEDED);
 }
 
-// M3: Column > 65535 fails LIMIT_EXCEEDED.
-fn void column_limit_exceeded() @test => @pool()
+// Columns beyond 65535 are accepted.
+fn void column_beyond_65535_succeeds() @test => @pool()
 {
-	// Column > 65535 before token
 	DString s = dstring::temp();
 	s.append_repeat(' ', 65536);
 	s.append("a: 1\n");
-	test::@error(parse_events(s.str_view()), parser::LIMIT_EXCEEDED);
+	(void)parse_events(s.str_view())!!;
 
-	// Long comments reset column count at newline and are accepted
 	DString s_comment = dstring::temp();
 	s_comment.append("# ");
 	s_comment.append_repeat('x', 70000);
@@ -102,7 +101,85 @@ fn void column_limit_exceeded() @test => @pool()
 	(void)parse_events(s_comment.str_view())!!;
 }
 
-// M3: Tag handle length > 65535 fails LIMIT_EXCEEDED.
+// Repro 1: 80 KB one-line flow sequence
+fn void wide_flow_sequence_80kb() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("[");
+	for (int i = 0; i < 40000; i++) s.append("1,");
+	s.append("1]");
+	Yaml y = yaml::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+	test::eq(y.doc(0).len(), 40001);
+	test::eq(y.doc(0).at(0).as_int()!!, 1);
+	test::eq(y.doc(0).at(40000).as_int()!!, 1);
+	String json = y.to_json(tmem)!!;
+	test::eq(json[0], '[');
+	test::eq(json[json.len - 2], ']');
+	test::eq(json[json.len - 1], '\n');
+}
+
+// Repro 2: 100 000-char quoted value in a flow map
+fn void wide_quoted_value_100kb() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("{\"a\": \"");
+	s.append_repeat('x', 100000);
+	s.append("\"}");
+	Yaml y = yaml::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+	test::eq(y.doc(0)["a"].as_string()!!.len, 100000);
+	String json = y.to_json(tmem)!!;
+	test::eq(json.starts_with("{\"a\":\""), true);
+	test::eq(json[json.len - 2], '}');
+	test::eq(json[json.len - 1], '\n');
+}
+
+// Repro 3: 10 000-key one-line flow map
+fn void wide_flow_map_10k_keys() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("{");
+	for (int i = 0; i < 10000; i++)
+	{
+		if (i > 0) s.append(",");
+		s.appendf("k%d: v", i);
+	}
+	s.append("}");
+	Yaml y = yaml::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+	test::eq(y.doc(0).len(), 10000);
+	test::eq(y.doc(0)["k0"].as_string()!!, "v");
+	test::eq(y.doc(0)["k9999"].as_string()!!, "v");
+	String json = y.to_json(tmem)!!;
+	test::eq(json[0], '{');
+	test::eq(json[json.len - 2], '}');
+	test::eq(json[json.len - 1], '\n');
+}
+
+// Repro 4: 2.5 MB one-line JSON array with 200 000 items
+fn void wide_json_array_200k_items() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("[");
+	for (int i = 0; i < 200000; i++)
+	{
+		if (i > 0) s.append(",");
+		s.appendf("{\"k\":%d}", i);
+	}
+	s.append("]");
+	Yaml y = yaml::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+	test::eq(y.doc(0).len(), 200000);
+	test::eq(y.doc(0).at(0)["k"].as_int()!!, 0);
+	test::eq(y.doc(0).at(199999)["k"].as_int()!!, 199999);
+	String json = y.to_json(tmem)!!;
+	test::eq(json[0], '[');
+	test::eq(json[json.len - 2], ']');
+	test::eq(json[json.len - 1], '\n');
+}
+
+// Tag handle length > 65535 fails LIMIT_EXCEEDED.
 fn void tag_handle_length_limit_exceeded() @test => @pool()
 {
 	// In-stream tag handle > 65535

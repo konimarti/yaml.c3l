@@ -1,5 +1,4 @@
-// v2 contract: zero-allocation scanner/parser (Card a).
-// Replaces the M1 shim with the real zero-allocation parser.
+// Zero-allocation YAML parser.
 module yaml::parser;
 
 import std::io;
@@ -319,7 +318,7 @@ fn Event? Parser.node(&self, bool indentless_sequence = false)
 			self.scanner.next_token()!;
 			self.state = self.states[--self.states_len];
 			e.type = SCALAR;
-			e.style = t.style;
+			e.style = t.style();
 			e.value = t.value;
 			return e;
 		case T_BLOCK_SEQUENCE_START:
