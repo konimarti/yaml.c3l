@@ -53,10 +53,16 @@ fn Parser* Parser.init_inplace(&self, char[] buf, bool verbose = true, Allocator
 	return self;
 }
 
+// Resolves a span to a String.
+// Validity: for plain and const spans, the returned String is valid as long as the input
+// buffer is alive. For spilled spans (SPILL_BIT), the returned String is valid only until the next
+// spill allocation (next Arena.put / next parser event), because the spill arena buffer may reallocate.
 fn String Parser.text(&self, Span s) => resolve(self.buf, &self.arena, s);
 
 fn char[] Parser.input(&self) => self.buf;
 
+// Returns an EventView wrapping this parser and event for formatting.
+// Spilled strings resolved during formatting are subject to the same validity as Parser.text.
 fn EventView Parser.view(&self, Event e) => { self, e };
 
 // The next event; 0 allocations in the real parser. After an error every call fails again.

@@ -101,8 +101,11 @@ struct Mark
 	int column;
 }
 
-enum EventType : char { STREAM_START, STREAM_END, DOCUMENT_START, DOCUMENT_END,
-	MAPPING_START, MAPPING_END, SEQUENCE_START, SEQUENCE_END, SCALAR, ALIAS }
+enum EventType : char
+{
+	STREAM_START, STREAM_END, DOCUMENT_START, DOCUMENT_END,
+	MAPPING_START, MAPPING_END, SEQUENCE_START, SEQUENCE_END, SCALAR, ALIAS
+}
 
 enum ScalarStyle : char { PLAIN, SINGLE, DOUBLE, LITERAL, FOLDED }
 
@@ -122,6 +125,7 @@ struct Event
 }
 
 // `io::printn(parser.view(event))` prints one test.event line.
+// Spilled strings resolved via the view/parser are valid only until the next Arena reallocation.
 struct EventView (Printable)
 {
 	Parser* parser;
