@@ -1,0 +1,71 @@
+name: CI
+on:
+  push:
+    branches: [ master, ci_testing ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'C3 compiler version to use'
+        required: false
+        default: 'v0.8.5_1'
+
+env:
+  C3_VERSION: v0.8.5_1
+  YAML_TEST_SUITE_COMMIT: 6ad3d2c62885d82fc349026c136ef560838fdf3d
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux,   os: ubuntu-latest,  asset: c3-linux.tar.gz }
+          - { name: macos,   os: macos-latest,   asset: c3-macos.zip }
+          - { name: windows, os: windows-latest, asset: c3-windows.zip }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup C3
+        run: |
+          VERSION="${{ github.event.inputs.version || env.C3_VERSION }}"
+          DEST="${{ runner.temp }}/c3"
+          mkdir -p "$DEST"
+          curl -fsSL -o "${{ runner.temp }}/${{ matrix.asset }}" \
+            "https://github.com/c3lang/c3c/releases/download/${VERSION}/${{ matrix.asset }}"
+          case "${{ matrix.asset }}" in
+            *.tar.gz) tar -xzf "${{ runner.temp }}/${{ matrix.asset }}" -C "$DEST" ;;
+            *.zip)    unzip -q "${{ runner.temp }}/${{ matrix.asset }}" -d "$DEST" \
+                        || 7z x -y -o"$DEST" "${{ runner.temp }}/${{ matrix.asset }}" ;;
+          esac
+          # the archives hold the compiler in a top-level directory; look for it
+          C3C=$(find "$DEST" -type f \( -name c3c -o -name c3c.exe \) | head -n 1)
+          test -n "$C3C"
+          chmod +x "$C3C"
+          if [ "${{ runner.os }}" = Windows ]; then cygpath -w "$(dirname "$C3C")" >> "$GITHUB_PATH"
+          else dirname "$C3C" >> "$GITHUB_PATH"; fi
+
+      - name: Check C3
+        run: c3c --version
+
+      - name: Run unit tests
+        run: c3c test
+
+      - name: Build yamlv
+        run: c3c build yamlv
+
+      - name: Fetch yaml-test-suite
+        run: |
+          git -c core.autocrlf=false clone --depth 1 --branch data \
+            https://github.com/yaml/yaml-test-suite.git test-suite
+          git -C test-suite -c core.autocrlf=false fetch --depth 1 origin "$YAML_TEST_SUITE_COMMIT"
+          git -C test-suite -c core.autocrlf=false checkout --detach "$YAML_TEST_SUITE_COMMIT"
+
+      - name: Run yaml-test-suite
+        run: test/run-suite.sh -j -v
