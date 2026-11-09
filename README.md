@@ -97,7 +97,7 @@ foreach (e : y.doc(0).entries()) io::printfn("key %s, a collection: %s", e.key_n
 ```
 
 `node.to_object(allocator)` converts a node to a `std::collections::object` `Object*` (free it with `o.free()`; a collection
-key becomes its JSON text): `Object* o = y.doc(0).to_object(tmem)!!;`
+key becomes its JSON text): `import std::collections::object; Object* o = y.doc(0).to_object(tmem)!!;`
 
 ### Decoding into a struct
 
@@ -172,8 +172,7 @@ nesting and block indentation levels, in every API), `MAX_INPUT` (1 GiB − 1), 
 flow-mapping key, spans at most about 2040 tokens), `MAX_TAG_DIRECTIVES` (16 `%TAG` per document), `MAX_ALIAS_NODES`
 (1,000,000) and `MAX_ALIAS_BYTES` (64 MiB) (what alias expansion would create, counted for the whole stream when the tree is
 built; this bounds the cost of printing, decoding or walking it), and `MAX_KEY_TEXT` (4 MiB) plus `KEY_TEXT_PER_BYTE` (4)
-per input byte (the JSON text of collection keys, in JSON output and `to_object` only). Also `LIMIT_EXCEEDED`: a token that starts
-after column 65,535 (a line wider than 64 KiB, even inside a flow collection: break long flow collections over several lines).
+per input byte (the JSON text of collection keys, at parse time (stream-wide) and in `to_object`/`Node` printing).
 
 ### Command-line tool
 
@@ -227,7 +226,7 @@ test/run-suite.sh -j       # valid 308/308, error 94/94, PASS 402 / FAIL 0, json
   only `from_buffer` and `Parser.init_inplace` parse in place and destroy the buffer.
 * **Event parser:** `Parser.init(String)` is now `init_inplace(char[])`; `Event` fields are spans (`parser.text(span)`), a
   tag is `tag_prefix` + `tag` (never concatenated), events print with `parser.view(e)`.
-* **New limits:** a line wider than 65,535 columns, nesting depth for block collections in the event parser, an implicit key
-  over about 2040 tokens, more than 16 `%TAG` directives per document and input over 1 GiB fail with `LIMIT_EXCEEDED`.
-  `MAX_ALIAS_*` count the expanded size of aliases; `MAX_KEY_TEXT` applies to JSON output and `to_object` only. Error
-  excerpts show text already decoded in place.
+* **New limits:** nesting depth for block collections in the event parser, an implicit key over about 2040 tokens, more than
+  16 `%TAG` directives per document and input over 1 GiB fail with `LIMIT_EXCEEDED`. `MAX_ALIAS_*` count the expanded size
+  of aliases; `MAX_KEY_TEXT` applies at parse time (stream-wide) and in `to_object`/`Node` printing. Error excerpts show
+  text already decoded in place.
