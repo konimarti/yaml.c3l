@@ -7,6 +7,10 @@
 		"yamlv": {
 			"type": "executable",
 			"sources": [ "src/yamlv/**" ]
+		},
+		"bench": {
+			"type": "executable",
+			"sources": [ "bench/bench.c3" ]
 		}
 	}
 }
