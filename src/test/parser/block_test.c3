@@ -149,17 +149,27 @@ fn void plain_crlf() @test => @pool()
 
 fn void error_line_after_blank_lines() @test => @pool()
 {
+	test::@error(events("top:\n  a: 1\n\n\n\nbad\n"), parser::MISSING_COLON);
+	// the error position comes from the same Mark as the events: "bad" is on line 6
 	Parser p;
-	p.init("top:\n  a: 1\n\n\n\nbad\n", false);
+	p.init("top:\n  a: 1\n\n\n\nbad: x\n", false);
 	while (true)
 	{
-		Event? e = p.next();
-		if (catch f = e)
+		Event e = p.next()!!;
+		assert(e.type != STREAM_END, "no scalar 'bad'");
+		if (e.type == SCALAR && e.value == "bad")
 		{
-			test::eq(f, parser::MISSING_COLON);
-			test::eq(p.scanner.error_mark.line, 6);
+			test::eq(e.start.line, 6);
 			return;
 		}
-		assert(e.type != STREAM_END, "expected an error");
 	}
+}
+
+// M3/M4 review item 1: a TAB is not indentation, so a TAB-indented line does not continue a plain scalar
+fn void tab_is_not_indentation() @test => @pool()
+{
+	test::@error(events("k: a\n\tb\n"), parser::SYNTAX_ERROR);
+	test::@error(events("- a\n\tb\n"), parser::SYNTAX_ERROR);
+	test::@error(events("k: [a\n\tb]\n"), parser::INVALID_INDENTATION);
+	test::eq(events("k: a\n \tb\n")!!, "+STR\n+DOC\n+MAP\n=VAL :k\n=VAL :a b\n-MAP\n-DOC\n-STR");
 }

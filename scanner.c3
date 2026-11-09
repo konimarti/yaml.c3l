@@ -47,7 +47,6 @@ struct Scanner
 	List {SimpleKey} keys;     // one possible simple key per flow level, [0] = block context
 	int flow_level;            // depth of '[' / '{' nesting
 	int json_line;             // line of a just scanned quoted scalar or flow end ("{"a":b}"), or 0
-	Mark error_mark;           // position of the last reported error
 }
 
 fn void Scanner.init(&self, String s, bool verbose = true)
@@ -90,7 +89,7 @@ fn char Scanner.peek(&self, sz offset = 0)
 	sz i = self.mark.pos + offset;
 	return i < self.s.len ? self.s[i] : '\0';
 }
-fn bool is_blankz(char c) => c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0';
+fn bool is_blankz(char c) => c.is_blank() || c == '\n' || c == '\0';   // no '\r' after normalize_breaks
 
 fn void Scanner.advance(&self)
 {
@@ -110,7 +109,6 @@ fn void Scanner.advance(&self)
 // Report an error (unless !verbose) and return its fault: `return self.error(m, msg)~;`.
 fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 {
-	self.error_mark = m;
 	if (self.verbose)
 	{
 		sz start = m.pos;
@@ -156,9 +154,9 @@ fn void? Scanner.fetch_more_tokens(&self)
 	}
 }
 
-fn void Scanner.push(&self, TokenType type, Mark m, String value = "")
+fn void Scanner.push(&self, TokenType type, Mark m, String value = "", ScalarStyle style = PLAIN)
 {
-	self.tokens.push({ .type = type, .start = m, .value = value });
+	self.tokens.push({ .type = type, .start = m, .value = value, .style = style });
 }
 
 fn void? Scanner.fetch_next_token(&self)
@@ -300,25 +298,23 @@ fn void? Scanner.save_simple_key(&self)
 	};
 }
 
-fn void? Scanner.remove_simple_key(&self)
+fn void? Scanner.remove_simple_key(&self) => self.drop_key(self.key());
+
+// A key that can no longer get its ':'; losing a required one is an error.
+fn void? Scanner.drop_key(&self, SimpleKey* k)
 {
-	SimpleKey* k = self.key();
-	if (k.possible && k.required)
-	{
-		return self.error(k.mark, "could not find expected ':'", MISSING_COLON)~;
-	}
+	if (k.possible && k.required) return self.error(k.mark, "could not find expected ':'", MISSING_COLON)~;
 	k.possible = false;
 }
 
-// Implicit keys are single-line and at most 1024 characters.
+// Implicit keys are single-line and at most 1024 characters; keys in a flow mapping have no limit.
 fn void? Scanner.stale_simple_keys(&self)
 {
 	foreach (&k : self.keys)
 	{
-		if (!k.possible) continue;
-		if ((k.mark.line == self.mark.line || k.flow_map) && self.mark.pos - k.mark.pos <= 1024) continue;
-		if (k.required) return self.error(k.mark, "could not find expected ':'", MISSING_COLON)~;
-		k.possible = false;
+		if (!k.possible || k.flow_map) continue;
+		if (k.mark.line == self.mark.line && self.mark.pos - k.mark.pos <= 1024) continue;
+		self.drop_key(k)!;
 	}
 }
 
@@ -461,7 +457,7 @@ fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 fn void? Scanner.end_of_line(&self)
 {
 	sz blanks = self.mark.pos;
-	while (self.peek() == ' ' || self.peek() == '\t') self.advance();
+	self.skip_blanks();
 	if (self.peek() == '#' && self.mark.pos > blanks)
 	{
 		while (!self.at_end() && self.peek() != '\n') self.advance();
@@ -510,9 +506,9 @@ fn String Scanner.scan_plain(&self)
 			char c = self.peek();
 			if (c == '\n' || (c == ':' && (is_blankz(self.peek(1)) || (flow && is_flow_indicator(self.peek(1)))))) break;
 			if (flow && is_flow_indicator(c)) break;
-			if (c == '#' && self.mark.pos > start && (self.s[self.mark.pos - 1] == ' ' || self.s[self.mark.pos - 1] == '\t')) break;
+			if (c == '#' && self.mark.pos > start && self.s[self.mark.pos - 1].is_blank()) break;
 			self.advance();
-			if (c != ' ' && c != '\t') end = self.mark.pos;
+			if (!c.is_blank()) end = self.mark.pos;
 		}
 		if (end > start)
 		{
@@ -525,7 +521,7 @@ fn String Scanner.scan_plain(&self)
 		sz i = self.mark.pos;
 		sz line_start;
 		int n = 0;
-		while (i < self.s.len && (self.s[i] == '\n' || self.s[i] == ' ' || self.s[i] == '\t'))
+		while (i < self.s.len && (self.s[i] == '\n' || self.s[i].is_blank()))
 		{
 			if (self.s[i] == '\n')
 			{
@@ -534,7 +530,7 @@ fn String Scanner.scan_plain(&self)
 			}
 			i++;
 		}
-		if (i >= self.s.len || (int)(i - line_start) <= self.indent || self.s[i] == '#' || self.is_marker(line_start))
+		if (i >= self.s.len || self.spaces_at(line_start) <= self.indent || self.s[i] == '#' || self.is_marker(line_start))
 		{
 			return buf.str_view();
 		}
@@ -543,14 +539,15 @@ fn String Scanner.scan_plain(&self)
 	}
 }
 
-// Number of spaces at the start of the current line (a TAB is not indentation).
-fn int Scanner.line_indent(&self)
+// Indentation counts spaces only, never TABs.
+fn int Scanner.spaces_at(&self, sz i)
 {
-	sz i = self.mark.pos - (sz)(self.mark.column - 1);
 	int n = 0;
 	while (i + n < self.s.len && self.s[i + n] == ' ') n++;
 	return n;
 }
+
+fn int Scanner.line_indent(&self) => self.spaces_at(self.mark.pos - (sz)self.col());
 
 // ---- quoted scalars ------------------------------------------------------
 
@@ -564,12 +561,12 @@ fn void? Scanner.fetch_flow_scalar(&self, bool single)
 	self.json_line = self.mark.line;
 	// only blanks, then ':', a comment or the end of the line may follow (in flow also ", ] }")
 	sz i = self.mark.pos;
-	while (i < self.s.len && (self.s[i] == ' ' || self.s[i] == '\t')) i++;
+	while (i < self.s.len && self.s[i].is_blank()) i++;
 	char c = i < self.s.len ? self.s[i] : '\n';
 	bool ok = c == '\n' || c == '#' || (c == ':' && (i + 1 == self.s.len || is_blankz(self.s[i + 1])));
 	if (self.flow_level) ok |= c == ':' || c == ',' || c == ']' || c == '}';
 	if (!ok) return self.error(self.mark, "unexpected text after a quoted scalar")~;
-	self.tokens.push({ .type = T_SCALAR, .start = m, .value = value, .style = single ? SINGLE : DOUBLE });
+	self.push(T_SCALAR, m, value, single ? SINGLE : DOUBLE);
 }
 
 fn String? Scanner.scan_flow_scalar(&self, bool single)
@@ -587,7 +584,7 @@ fn String? Scanner.scan_flow_scalar(&self, bool single)
 		while (!self.at_end())
 		{
 			char c = self.peek();
-			if (c == ' ' || c == '\t' || c == '\n') break;
+			if (c.is_blank() || c == '\n') break;
 			if (single && c == '\'' && self.peek(1) == '\'')
 			{
 				buf.append_char('\'');
@@ -624,7 +621,7 @@ fn String? Scanner.scan_flow_scalar(&self, bool single)
 			{
 				breaks++;
 			}
-			else if (c != ' ' && c != '\t')
+			else if (!c.is_blank())
 			{
 				break;
 			}
@@ -683,14 +680,8 @@ fn void? Scanner.scan_escape(&self, DString* buf)
 	for (int i = 0; i < digits; i++)
 	{
 		char h = self.peek();
-		uint v;
-		switch
-		{
-			case h >= '0' && h <= '9': v = h - '0';
-			case (h | 0x20) >= 'a' && (h | 0x20) <= 'f': v = (h | 0x20) - 'a' + 10;
-			default: return self.error(m, "invalid hex digit in escape sequence", INVALID_ESCAPE)~;
-		}
-		code = code * 16 + v;
+		if (!h.is_xdigit()) return self.error(m, "invalid hex digit in escape sequence", INVALID_ESCAPE)~;
+		code = code * 16 + h.from_hex();
 		self.advance();
 	}
 	if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return self.error(m, "invalid Unicode code point", INVALID_ESCAPE)~;
@@ -708,7 +699,7 @@ fn void? Scanner.fetch_block_scalar(&self, bool literal)
 	self.simple_key_allowed = true;
 	self.compact_ok = true;
 	self.tab_indent = false;
-	self.tokens.push({ .type = T_SCALAR, .start = m, .value = value, .style = literal ? LITERAL : FOLDED });
+	self.push(T_SCALAR, m, value, literal ? LITERAL : FOLDED);
 }
 
 fn String? Scanner.scan_block_scalar(&self, bool literal)
@@ -739,7 +730,7 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 		self.advance();
 	}
 	sz blanks = self.mark.pos;
-	while (self.peek() == ' ' || self.peek() == '\t') self.advance();
+	self.skip_blanks();
 	if (self.peek() == '#' && self.mark.pos > blanks)
 	{
 		while (!self.at_end() && self.peek() != '\n') self.advance();
@@ -769,7 +760,7 @@ fn String? Scanner.scan_block_scalar(&self, bool literal)
 	bool more_indented = false; // the previous content line started with a blank
 	while (self.col() == indent && !self.at_end() && !self.at_marker())
 	{
-		bool blank = self.peek() == ' ' || self.peek() == '\t';
+		bool blank = self.peek().is_blank();
 		// folded: a single break between two normal lines becomes a space
 		if (!literal && line_break && !more_indented && !blank)
 		{
@@ -825,7 +816,7 @@ fn int? Scanner.block_breaks(&self, int indent, int min_indent, int* max_empty)
 
 fn void Scanner.skip_blanks(&self)
 {
-	while (self.peek() == ' ' || self.peek() == '\t') self.advance();
+	while (self.peek().is_blank()) self.advance();
 }
 
 // Characters up to a blank or a flow indicator (anchor names, directive arguments).
@@ -845,7 +836,7 @@ fn void? Scanner.fetch_anchor(&self, bool is_alias)
 	self.advance();
 	String name = self.scan_word();
 	if (!name.len) return self.error(m, is_alias ? "alias without a name" : "anchor without a name")~;
-	self.tokens.push({ .type = is_alias ? T_ALIAS : T_ANCHOR, .start = m, .value = name });
+	self.push(is_alias ? T_ALIAS : T_ANCHOR, m, name);
 }
 
 fn bool is_word_char(char c) => c.is_alnum() || c == '-';
@@ -859,9 +850,10 @@ fn String? Scanner.scan_tag_uri(&self, bool verbatim)
 		char c = self.peek();
 		if (c == '%')
 		{
-			char? b = hex_byte(self.peek(1), self.peek(2));
-			if (catch b) return self.error(self.mark, "invalid '%' escape in a tag", INVALID_ESCAPE)~;
-			buf.append_char(b);
+			char hi = self.peek(1);
+			char lo = self.peek(2);
+			if (!hi.is_xdigit() || !lo.is_xdigit()) return self.error(self.mark, "invalid '%' escape in a tag", INVALID_ESCAPE)~;
+			buf.append_char(hi.from_hex() * 16 + lo.from_hex());
 			for (int i = 0; i < 3; i++) self.advance();
 			continue;
 		}
@@ -870,12 +862,6 @@ fn String? Scanner.scan_tag_uri(&self, bool verbatim)
 		self.advance();
 	}
 	return buf.str_view();
-}
-
-fn char? hex_byte(char hi, char lo)
-{
-	if (!hi.is_xdigit() || !lo.is_xdigit()) return INVALID_ESCAPE~;
-	return (char)((hi.is_digit() ? hi - '0' : (hi | 0x20) - 'a' + 10) * 16 + (lo.is_digit() ? lo - '0' : (lo | 0x20) - 'a' + 10));
 }
 
 // '!<uri>', '!', '!suffix', '!!suffix', '!handle!suffix'. Resolved by the parser.
@@ -937,7 +923,7 @@ fn void? Scanner.fetch_directive(&self)
 			while (self.peek().is_digit()) self.advance();
 			String version = self.s[from:self.mark.pos - from];
 			self.end_of_line()!;
-			self.tokens.push({ .type = T_VERSION_DIRECTIVE, .start = m, .value = version });
+			self.push(T_VERSION_DIRECTIVE, m, version);
 		case "TAG":
 			String handle = self.scan_word();
 			bool ok = handle == "!" || (handle.len >= 2 && handle[0] == '!' && handle[^1] == '!');

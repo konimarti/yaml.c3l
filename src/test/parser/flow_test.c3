@@ -82,3 +82,14 @@ fn void unclosed_flow() @test => @pool()
 	test::@error(body("{a: [b}"), parser::SYNTAX_ERROR);   // mismatched closer
 	test::@error(body("[a]]"), parser::SYNTAX_ERROR);
 }
+
+// M3/M4 review item 2: keys directly in a flow mapping have no 1024-character limit
+fn void long_flow_map_key() @test => @pool()
+{
+	DString k = dstring::temp();
+	k.append_repeat('a', 1100);
+	String key = k.str_view();
+	test::eq(body(string::tformat("{%s: b}", key))!!, string::tformat("+MAP {} =VAL :%s =VAL :b -MAP", key));
+	test::eq(body(string::tformat(`{"%s": b}`, key))!!, string::tformat(`+MAP {} =VAL "%s =VAL :b -MAP`, key));
+	test::@error(body(string::tformat("[%s: b]", key)), parser::SYNTAX_ERROR);
+}

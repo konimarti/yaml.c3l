@@ -66,9 +66,9 @@ fn Event? Parser.next(&self)
 
 fn Event empty_scalar(Mark m) => { .type = SCALAR, .start = m };
 
-fn bool Parser.peek_is(&self, Token t, TokenType... types)
+fn bool Token.is(self, TokenType... types)
 {
-	foreach (type : types) if (t.type == type) return true;
+	foreach (type : types) if (self.type == type) return true;
 	return false;
 }
 
@@ -106,7 +106,7 @@ fn Event? Parser.document_start(&self, bool implicit)
 		self.state = DOCUMENT_CONTENT;
 		return { .type = DOCUMENT_START, .explicit = true, .start = t.start };
 	}
-	if (!implicit) return self.fail(t, "expected '---' before a new document");
+	if (!implicit) return self.fail(t, "unexpected content after the document's root node");
 	self.state = BLOCK_NODE;
 	return { .type = DOCUMENT_START, .start = t.start };
 }
@@ -151,7 +151,7 @@ fn String? Parser.resolve_tag(&self, Token t)
 fn Event? Parser.document_content(&self)
 {
 	Token t = self.scanner.peek_token()!;
-	if (self.peek_is(t, T_DOCUMENT_START, T_DOCUMENT_END, T_STREAM_END, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE))
+	if (t.is(T_DOCUMENT_START, T_DOCUMENT_END, T_STREAM_END, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE))
 	{
 		self.state = self.states.pop()!!;
 		return empty_scalar(t.start);
@@ -246,7 +246,7 @@ fn Event? Parser.block_sequence_entry(&self)
 	if (t.type != T_BLOCK_ENTRY) return self.fail(t, "expected '-' or a less indented line");
 	self.scanner.next_token()!;
 	Token n = self.scanner.peek_token()!;
-	if (self.peek_is(n, T_BLOCK_ENTRY, T_BLOCK_END)) return empty_scalar(t.start);
+	if (n.is(T_BLOCK_ENTRY, T_BLOCK_END)) return empty_scalar(t.start);
 	self.states.push(BLOCK_SEQUENCE_ENTRY);
 	return self.node(false);
 }
@@ -262,7 +262,7 @@ fn Event? Parser.indentless_sequence_entry(&self)
 	}
 	self.scanner.next_token()!;
 	Token n = self.scanner.peek_token()!;
-	if (self.peek_is(n, T_BLOCK_ENTRY, T_KEY, T_VALUE, T_BLOCK_END)) return empty_scalar(t.start);
+	if (n.is(T_BLOCK_ENTRY, T_KEY, T_VALUE, T_BLOCK_END)) return empty_scalar(t.start);
 	self.states.push(INDENTLESS_SEQUENCE_ENTRY);
 	return self.node(false);
 }
@@ -282,7 +282,7 @@ fn Event? Parser.block_mapping_key(&self)
 		case T_KEY:
 			self.scanner.next_token()!;
 			Token n = self.scanner.peek_token()!;
-			if (self.peek_is(n, T_KEY, T_VALUE, T_BLOCK_END))
+			if (n.is(T_KEY, T_VALUE, T_BLOCK_END))
 			{
 				self.state = BLOCK_MAPPING_VALUE;
 				return empty_scalar(t.start);
@@ -304,7 +304,7 @@ fn Event? Parser.block_mapping_value(&self)
 	}
 	self.scanner.next_token()!;
 	Token n = self.scanner.peek_token()!;
-	if (self.peek_is(n, T_KEY, T_VALUE, T_BLOCK_END))
+	if (n.is(T_KEY, T_VALUE, T_BLOCK_END))
 	{
 		self.state = BLOCK_MAPPING_KEY;
 		return empty_scalar(t.start);
@@ -316,18 +316,22 @@ fn Event? Parser.block_mapping_value(&self)
 
 // ---- flow collections ----------------------------------------------------
 
+// Every entry but the first follows a ','; returns the token after it.
+fn Token? Parser.flow_separator(&self, Token t, bool first, String msg)
+{
+	if (first) return t;
+	if (t.type != T_FLOW_ENTRY) return self.scanner.error(t.start, msg)~;
+	self.scanner.next_token()!;
+	return self.scanner.peek_token()!;
+}
+
 // Entries are separated by ','; a trailing ',' before ']' is allowed.
 fn Event? Parser.flow_sequence_entry(&self, bool first)
 {
 	Token t = self.scanner.peek_token()!;
 	if (t.type != T_FLOW_SEQUENCE_END)
 	{
-		if (!first)
-		{
-			if (t.type != T_FLOW_ENTRY) return self.fail(t, "expected ',' or ']'");
-			self.scanner.next_token()!;
-			t = self.scanner.peek_token()!;
-		}
+		t = self.flow_separator(t, first, "expected ',' or ']'")!;
 		if (t.type == T_KEY || t.type == T_VALUE)   // "[a: b]", "[? a : b]", "[: b]": a single-pair map
 		{
 			if (t.type == T_KEY) self.scanner.next_token()!;
@@ -349,7 +353,7 @@ fn Event? Parser.flow_sequence_entry_mapping_key(&self)
 {
 	Token t = self.scanner.peek_token()!;
 	self.state = FLOW_SEQUENCE_ENTRY_MAPPING_VALUE;
-	if (self.peek_is(t, T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
+	if (t.is(T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
 	self.states.push(FLOW_SEQUENCE_ENTRY_MAPPING_VALUE);
 	return self.node(false);
 }
@@ -361,7 +365,7 @@ fn Event? Parser.flow_sequence_entry_mapping_value(&self)
 	if (t.type != T_VALUE) return empty_scalar(t.start);
 	self.scanner.next_token()!;
 	t = self.scanner.peek_token()!;
-	if (self.peek_is(t, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
+	if (t.is(T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
 	self.states.push(FLOW_SEQUENCE_ENTRY_MAPPING_END);
 	return self.node(false);
 }
@@ -372,17 +376,12 @@ fn Event? Parser.flow_mapping_key(&self, bool first)
 	Token t = self.scanner.peek_token()!;
 	if (t.type != T_FLOW_MAPPING_END)
 	{
-		if (!first)
-		{
-			if (t.type != T_FLOW_ENTRY) return self.fail(t, "expected ',' or '}'");
-			self.scanner.next_token()!;
-			t = self.scanner.peek_token()!;
-		}
+		t = self.flow_separator(t, first, "expected ',' or '}'")!;
 		if (t.type == T_KEY)
 		{
 			self.scanner.next_token()!;
 			t = self.scanner.peek_token()!;
-			if (self.peek_is(t, T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END))
+			if (t.is(T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END))
 			{
 				self.state = FLOW_MAPPING_VALUE;
 				return empty_scalar(t.start);
@@ -413,7 +412,7 @@ fn Event? Parser.flow_mapping_value(&self, bool empty)
 	if (empty || t.type != T_VALUE) return empty_scalar(t.start);
 	self.scanner.next_token()!;
 	t = self.scanner.peek_token()!;
-	if (self.peek_is(t, T_FLOW_ENTRY, T_FLOW_MAPPING_END)) return empty_scalar(t.start);
+	if (t.is(T_FLOW_ENTRY, T_FLOW_MAPPING_END)) return empty_scalar(t.start);
 	self.states.push(FLOW_MAPPING_KEY);
 	return self.node(false);
 }
