@@ -68,8 +68,6 @@ struct Scanner
 	sz invalid_at;
 	bool verbose;
 	bool prev_blank;
-	bool has_bom;
-	bool input_limit_exceeded;
 
 	Token[QUEUE_SIZE] tokens;
 	uint head;
@@ -105,11 +103,6 @@ fn void Scanner.init(&self, char[] buf, bool verbose, Arena* arena, Allocator sp
 		.prev_blank = true,
 	};
 
-	if (buf.len > MAX_INPUT)
-	{
-		self.input_limit_exceeded = true;
-	}
-
 	// In-place CRLF compaction: \r\n and \r -> \n
 	uint r = 0;
 	uint w = 0;
@@ -132,7 +125,6 @@ fn void Scanner.init(&self, char[] buf, bool verbose, Arena* arena, Allocator sp
 	// Leading BOM: do NOT remove from buf, start scanning at byte 3
 	if (((String)self.s).starts_with(BOM))
 	{
-		self.has_bom = true;
 		self.mark = { 3, 1, 1 };
 	}
 	else
@@ -211,9 +203,10 @@ fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 		if (m.pos - start > EXCERPT) start = m.pos - EXCERPT;
 		while (start < m.pos && conv::is_cont(self.s[start])) start++;
 
-		sz end = m.pos;
-		while (end < self.s.len && end - m.pos < EXCERPT && (end < self.mark.pos || self.s[end] != '\n')) end++;
+		sz end = m.pos < self.s.len ? m.pos : self.s.len;
+		while (end < self.s.len && end - m.pos < EXCERPT && self.s[end] != '\n') end++;
 		while (end > m.pos && end < self.s.len && conv::is_cont(self.s[end])) end--;
+		if (end < start) end = start;
 
 		(void)io::eprintfn("YAML ERROR -- Line %d, Col %d: %s", m.line, m.column, msg);
 		int caret;
@@ -259,6 +252,8 @@ fn sz Scanner.ring_index(&self, sz number) @inline
 fn void? Scanner.push(&self, TokenType type, Mark m, Span value = {}, ScalarStyle style = PLAIN, Span handle = {})
 {
 	if (self.count >= QUEUE_SIZE) return self.error(m, "token queue overflow", LIMIT_EXCEEDED)~;
+	if (m.column > 65535) return self.error(m, "column limit exceeded", LIMIT_EXCEEDED)~;
+	if (handle.len > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
 	uint idx = (self.head + self.count) % QUEUE_SIZE;
 	self.tokens[idx] = {
 		.value = value,
@@ -326,7 +321,7 @@ fn void? Scanner.fetch_next_token(&self)
 {
 	if (!self.stream_start_done)
 	{
-		if (self.input_limit_exceeded)
+		if (self.s.len > MAX_INPUT)
 		{
 			return self.error(self.mark, "input size limit exceeded", LIMIT_EXCEEDED)~;
 		}
@@ -343,7 +338,7 @@ fn void? Scanner.fetch_next_token(&self)
 		return;
 	}
 	int prev_line = self.mark.line;
-	self.scan_to_next_token();
+	self.scan_to_next_token()!;
 	self.stale_simple_keys()!;
 	bool json_key = self.json_node && (self.mark.line == prev_line || self.simple_key().flow_map());
 	self.json_node = false;
@@ -390,7 +385,7 @@ fn void? Scanner.fetch_next_token(&self)
 
 fn bool Scanner.bom_at(&self, sz i) @inline => ((String)self.s[i..]).starts_with(BOM);
 
-fn void Scanner.scan_to_next_token(&self)
+fn void? Scanner.scan_to_next_token(&self)
 {
 	while (!self.at_end())
 	{
@@ -423,9 +418,10 @@ fn void Scanner.scan_to_next_token(&self)
 		}
 		else
 		{
-			return;
+			break;
 		}
 	}
+	if (!self.at_end() && self.mark.column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 }
 
 // ---- indentation ---------------------------------------------------------
@@ -433,6 +429,7 @@ fn void Scanner.scan_to_next_token(&self)
 fn bool? Scanner.roll_indent(&self, int column)
 {
 	if (self.indent >= column) return false;
+	if (column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 	if (self.indents_len >= MAX_DEPTH) return self.error(self.mark, "indentation depth limit exceeded", LIMIT_EXCEEDED)~;
 	self.indents[self.indents_len++] = self.indent;
 	self.indent = column;
@@ -453,6 +450,7 @@ fn void? Scanner.unroll_indent(&self, int column)
 fn void? Scanner.save_simple_key(&self)
 {
 	if (!self.simple_key_allowed) return;
+	if (self.mark.column > 65535) return self.error(self.mark, "column limit exceeded", LIMIT_EXCEEDED)~;
 	self.remove_simple_key()!;
 	SimpleKey* k = self.simple_key();
 	char flags = KEY_POSSIBLE;
@@ -879,8 +877,20 @@ fn void? Scanner.scan_escape(&self, InPlaceWriter* writer)
 		case '\\': writer.append_char(c, (uint)self.mark.pos)!; return;
 		case 'N': writer.append_char32(0x85, (uint)self.mark.pos)!; return;
 		case '_': writer.append_char32(0xa0, (uint)self.mark.pos)!; return;
-		case 'L': writer.append_char32(0x2028, (uint)self.mark.pos)!; return;
-		case 'P': writer.append_char32(0x2029, (uint)self.mark.pos)!; return;
+		case 'L':
+			if (catch err = writer.append_char32(0x2028, (uint)self.mark.pos))
+			{
+				if (err == NO_SPACE) return self.error(m, "scalar does not fit in place (\\L/\\P); give the parser a spill allocator", NO_SPACE)~;
+				return err~;
+			}
+			return;
+		case 'P':
+			if (catch err = writer.append_char32(0x2029, (uint)self.mark.pos))
+			{
+				if (err == NO_SPACE) return self.error(m, "scalar does not fit in place (\\L/\\P); give the parser a spill allocator", NO_SPACE)~;
+				return err~;
+			}
+			return;
 		case 'x': digits = 2;
 		case 'u': digits = 4;
 		case 'U': digits = 8;
@@ -1084,6 +1094,7 @@ fn void? Scanner.fetch_tag(&self)
 		while (is_word_char(self.peek(n))) n++;
 		if (self.peek(n) == '!')
 		{
+			if (n + 1 > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
 			handle = { (uint)self.mark.pos, (uint)(n + 1) };
 			for (sz i = 0; i <= n; i++) self.advance();
 		}
@@ -1126,6 +1137,7 @@ fn void? Scanner.fetch_directive(&self)
 			self.push(T_VERSION_DIRECTIVE, m, version_span)!;
 		case "TAG":
 			Span handle = self.scan_word();
+			if (handle.len > 65535) return self.error(m, "tag handle length limit exceeded", LIMIT_EXCEEDED)~;
 			String handle_str = (String)self.s[handle.off:handle.len];
 			bool ok = handle_str == "!" || (handle_str.len >= 2 && handle_str[0] == '!' && handle_str[^1] == '!');
 			if (handle_str.len > 2) foreach (c : handle_str[1:handle_str.len - 2]) ok &= is_word_char(c);
