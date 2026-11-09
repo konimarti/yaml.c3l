@@ -44,7 +44,8 @@ The `yaml::from_*` functions accept two additional arguments: a memory allocator
 for error verbosity. The default allocator is `mem`. Release the data with `data.free()`.
 
 A YAML stream can hold several documents. `data.len()` is the number of documents, and each
-document is one `Object*`. An empty document is `null`.
+document is one `Object*`. An empty document is `null`. To declare an `Object*` variable, add
+`import std::collections::object;`.
 
 To access a value, use `YamlData.get` (or the `[]` operator) with a dotted path. Mapping keys
 and sequence indexes are separated by `.`:

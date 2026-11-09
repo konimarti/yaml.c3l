@@ -1,4 +1,4 @@
-module yaml;
+module yaml @private;
 
 import std::collections::map, std::collections::list, std::collections::object;
 import yaml::parser;

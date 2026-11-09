@@ -1,9 +1,6 @@
 // Scanner: characters -> tokens (libyaml style: indent stack, simple keys, one token queue).
-module yaml::parser;
+module yaml::parser @private;
 import std::io, std::collections::list;
-
-faultdef INVALID_CHARACTER, INVALID_INDENTATION, MISSING_COLON, INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE,
-	INVALID_BLOCK_HEADER, UNCLOSED_FLOW, INVALID_DIRECTIVE, UNDEFINED_TAG_HANDLE;
 
 enum TokenType : char
 {

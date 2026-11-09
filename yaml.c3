@@ -1,7 +1,7 @@
 module yaml;
 
 import std::io;
-import std::collections::object @public;
+import std::collections::object;
 import std::collections::list;
 
 import yaml::parser;
@@ -22,14 +22,14 @@ fn sz? YamlData.to_format(&self, Formatter* f) @dynamic
 }
 
 // Prints an Object as compact JSON (Object.to_format does not escape strings).
-struct Json (Printable)
+struct Json (Printable) @private
 {
 	Object* o;
 }
 
 fn sz? Json.to_format(&self, Formatter* f) @dynamic => write_json(f, self.o);
 
-fn sz? write_json(Formatter* f, Object* o)
+fn sz? write_json(Formatter* f, Object* o) @private
 {
 	switch
 	{
@@ -62,7 +62,7 @@ fn sz? write_json(Formatter* f, Object* o)
 
 // The shortest of %.15g, %.16g, %.17g that reads back as the same double, with a '.' or an
 // exponent; no JSON for inf/nan.
-fn sz? write_float(Formatter* f, double d)
+fn sz? write_float(Formatter* f, double d) @private
 {
 	if (d != d || d == double::inf || d == -double::inf) return f.print("null");
 	String s;
@@ -77,7 +77,7 @@ fn sz? write_float(Formatter* f, double d)
 }
 
 // RFC 8259 string escapes.
-fn sz? write_string(Formatter* f, String s)
+fn sz? write_string(Formatter* f, String s) @private
 {
 	sz n = f.print("\"")!;
 	foreach (c : s)

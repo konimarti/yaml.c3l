@@ -1,5 +1,5 @@
-// Parser: tokens -> events (libyaml-style state machine with a state stack).
-module yaml::parser;
+// Parser: tokens -> events (libyaml-style state machine with a state stack); only Parser is public.
+module yaml::parser @private;
 import std::collections::list, std::collections::map;
 
 enum State : char
@@ -12,7 +12,7 @@ enum State : char
 	FLOW_MAPPING_FIRST_KEY, FLOW_MAPPING_KEY, FLOW_MAPPING_VALUE, FLOW_MAPPING_EMPTY_VALUE, END
 }
 
-struct Parser
+struct Parser @public
 {
 	Scanner scanner;
 	State state;

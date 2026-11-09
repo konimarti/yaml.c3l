@@ -1,9 +1,12 @@
-// Events (one test.event line each), their marks and styles.
+// The public side of the event parser: events (one test.event line each), their marks, styles,
+// the faults of the scanner and parser, and the limits.
 module yaml::parser;
 
 import std::io;
 
-faultdef SYNTAX_ERROR, LIMIT_EXCEEDED;
+faultdef SYNTAX_ERROR, LIMIT_EXCEEDED, INVALID_CHARACTER, INVALID_INDENTATION, MISSING_COLON,
+	INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE, INVALID_BLOCK_HEADER, UNCLOSED_FLOW,
+	INVALID_DIRECTIVE, UNDEFINED_TAG_HANDLE;
 
 // Limits for untrusted input; exceeding one fails with LIMIT_EXCEEDED.
 const int MAX_DEPTH = 512;              // nesting depth: flow collections in the scanner, the built tree
