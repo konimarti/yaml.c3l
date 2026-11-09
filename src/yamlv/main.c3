@@ -3,6 +3,7 @@ module yamlv;
 import std::io, std::os;
 import yaml;
 import yaml::parser;
+import yaml2::parser;
 
 const String USAGE = "yamlv: YAML parser\n\nUsage: yamlv [OPTIONS]\n\nOptions:\n  -e  Output event stream\n  -j  Output as JSON\n  -h  Show this help\n";
 
@@ -29,25 +30,28 @@ fn int main(String[] args)
 	@pool()
 	{
 		ByteWriter writer;
-		if (catch err = io::copy_to(io::stdin(), writer.tinit()))
+		writer.init(mem);
+		defer (void)writer.destroy();
+		if (catch err = io::copy_to(io::stdin(), &writer))
 		{
 			io::eprintfn("cannot read stdin: %s", err);
 			return 1;
 		}
+		char[] input_bytes = writer.array_view();
 		String input = writer.str_view();
 		if (events)
 		{
-			Parser p;
-			p.init(input);
+			yaml2::parser::Parser p;
+			p.init_inplace(input_bytes, true);
 			while (true)
 			{
-				Event? e = p.next();
+				yaml2::parser::Event? e = p.next();
 				if (catch e) return 1;
-				io::printn(e);
+				io::printn(p.view(e));
 				if (e.type == STREAM_END) return 0;
 			}
 		}
-		Yaml? data = yaml::from_string(input);
+		yaml::Yaml? data = yaml::from_string(input);
 		if (catch data) return 1;
 		defer data.free();
 		if (json)
