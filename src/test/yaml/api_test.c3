@@ -135,15 +135,15 @@ fn void deep_alias_limit() @test => @pool()
 fn void nested_anchors_are_not_copied() @test => @pool()
 {
 	DString s = dstring::temp();
-	for (int i = 0; i < 300; i++) s.appendf("&a%d [", i);
+	for (int i = 0; i < 200; i++) s.appendf("&a%d [", i);
 	for (int i = 0; i < 10_000; i++) s.append(i ? ",x" : "x");
-	s.append_repeat(']', 300);
+	s.append_repeat(']', 200);
 	Clock start = clock::now();
 	YamlData data = yaml::from_string(s.str_view(), mem, false)!!;
 	defer data.free();
 	assert(start.to_now() < (NanoDuration)500_000_000, "nested anchors must not be copied");
 	DString path = dstring::temp();
-	for (int i = 0; i < 300; i++) path.append(i ? ".0" : "0");
+	for (int i = 0; i < 200; i++) path.append(i ? ".0" : "0");
 	test::eq(data.get(path.str_view())!!.s, "x");
 }
 

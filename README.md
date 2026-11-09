@@ -97,7 +97,7 @@ Error messages can be silenced by setting the optional `verbose` to `false` in a
 
 The limits for untrusted input are constants in `yaml::parser`. Exceeding one fails with
 `parser::LIMIT_EXCEEDED`:
-* `parser::MAX_DEPTH` (512): nesting depth. The event parser (`Parser.next`, `yamlv -e`)
+* `parser::MAX_DEPTH` (256): nesting depth. The event parser (`Parser.next`, `yamlv -e`)
   checks flow collections; building a document checks the whole tree, including the parts
   that come from aliases.
 
