@@ -198,10 +198,10 @@ fn void? Scanner.fetch_next_token(&self)
 	if (c == '-' && ends_indicator)
 	{
 		if (flow) return self.error(self.mark, "block sequence entries are not allowed in a flow collection")~;
-		return self.fetch_block_entry();
+		return self.fetch_indicator(T_BLOCK_ENTRY, T_BLOCK_SEQUENCE_START, "block sequence entries are not allowed here");
 	}
 	if (c == ':' && (ends_indicator || (flow && json_key))) return self.fetch_value();
-	if (c == '?' && ends_indicator) return self.fetch_key();
+	if (c == '?' && ends_indicator) return self.fetch_indicator(T_KEY, T_BLOCK_MAPPING_START, "explicit keys are not allowed here");
 	if (self.at_marker()) return self.fetch_document_indicator(c == '-' ? T_DOCUMENT_START : T_DOCUMENT_END);
 	if (c == '\'' || c == '"') return self.fetch_flow_scalar(c == '\'');
 	if (c == '|' || c == '>')
@@ -330,23 +330,25 @@ fn void? Scanner.fetch_stream_end(&self)
 	self.push(T_STREAM_END, self.mark);
 }
 
-fn void? Scanner.fetch_block_entry(&self)
+// '-' (block entry, block context only) or '?' (explicit key). In block context the indicator
+// may open a new block collection at its column, but only where compact_ok allows it.
+fn void? Scanner.fetch_indicator(&self, TokenType token, TokenType collection, String not_here)
 {
-	if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
-	if (self.indent < self.col())
+	if (!self.flow_level)
 	{
-		if (!self.compact_ok || !self.simple_key_allowed)
+		if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
+		if (self.indent < self.col())
 		{
-			return self.error(self.mark, "block sequence entries are not allowed here")~;
+			if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, not_here)~;
+			self.roll_indent(self.col(), collection, self.mark);
 		}
-		self.roll_indent(self.col(), T_BLOCK_SEQUENCE_START, self.mark);
 	}
 	self.remove_simple_key()!;
 	Mark m = self.mark;
 	self.advance();
-	self.simple_key_allowed = true;
+	self.simple_key_allowed = !self.flow_level;
 	self.compact_ok = self.peek() == ' ';   // "-\t-" may not nest
-	self.push(T_BLOCK_ENTRY, m);
+	self.push(token, m);
 }
 
 fn void? Scanner.fetch_value(&self)
@@ -383,22 +385,6 @@ fn void? Scanner.fetch_value(&self)
 	Mark m = self.mark;
 	self.advance();
 	self.push(T_VALUE, m);
-}
-
-fn void? Scanner.fetch_key(&self)
-{
-	if (!self.flow_level && self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
-	if (!self.flow_level && self.indent < self.col())
-	{
-		if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, "explicit keys are not allowed here")~;
-		self.roll_indent(self.col(), T_BLOCK_MAPPING_START, self.mark);
-	}
-	self.remove_simple_key()!;
-	Mark m = self.mark;
-	self.advance();
-	self.simple_key_allowed = !self.flow_level;
-	self.compact_ok = self.peek() == ' ';
-	self.push(T_KEY, m);
 }
 
 // '[' or '{': the collection may itself be an implicit key ("[a]: b").

@@ -1,7 +1,6 @@
 // Parser: tokens -> events (libyaml-style state machine with a state stack).
 module yaml::parser;
-import std::io, std::collections::list;
-
+import std::collections::list;
 
 enum State : char
 {
@@ -65,6 +64,20 @@ fn Event? Parser.next(&self)
 }
 
 fn Event empty_scalar(Mark m) => { .type = SCALAR, .start = m };
+
+// The node at the next token, or an empty scalar if that token is one of `ends`; then continue
+// in state `next`.
+fn Event? Parser.node_or_empty(&self, State next, bool indentless_sequence, TokenType... ends)
+{
+	Token t = self.scanner.peek_token()!;
+	if (t.is(...ends))
+	{
+		self.state = next;
+		return empty_scalar(t.start);
+	}
+	self.states.push(next);
+	return self.node(indentless_sequence);
+}
 
 fn bool Token.is(self, TokenType... types)
 {
@@ -246,10 +259,7 @@ fn Event? Parser.block_sequence_entry(&self)
 	}
 	if (t.type != T_BLOCK_ENTRY) return self.fail(t, "expected '-' or a less indented line");
 	self.scanner.next_token()!;
-	Token n = self.scanner.peek_token()!;
-	if (n.is(T_BLOCK_ENTRY, T_BLOCK_END)) return empty_scalar(t.start);
-	self.states.push(BLOCK_SEQUENCE_ENTRY);
-	return self.node(false);
+	return self.node_or_empty(BLOCK_SEQUENCE_ENTRY, false, T_BLOCK_ENTRY, T_BLOCK_END);
 }
 
 // "key:\n- a": entries at the mapping's own indent, no BLOCK_SEQUENCE_START/BLOCK_END.
@@ -262,10 +272,7 @@ fn Event? Parser.indentless_sequence_entry(&self)
 		return { .type = SEQUENCE_END, .start = t.start };
 	}
 	self.scanner.next_token()!;
-	Token n = self.scanner.peek_token()!;
-	if (n.is(T_BLOCK_ENTRY, T_KEY, T_VALUE, T_BLOCK_END)) return empty_scalar(t.start);
-	self.states.push(INDENTLESS_SEQUENCE_ENTRY);
-	return self.node(false);
+	return self.node_or_empty(INDENTLESS_SEQUENCE_ENTRY, false, T_BLOCK_ENTRY, T_KEY, T_VALUE, T_BLOCK_END);
 }
 
 fn Event? Parser.block_mapping_key(&self)
@@ -282,14 +289,7 @@ fn Event? Parser.block_mapping_key(&self)
 			return empty_scalar(t.start);
 		case T_KEY:
 			self.scanner.next_token()!;
-			Token n = self.scanner.peek_token()!;
-			if (n.is(T_KEY, T_VALUE, T_BLOCK_END))
-			{
-				self.state = BLOCK_MAPPING_VALUE;
-				return empty_scalar(t.start);
-			}
-			self.states.push(BLOCK_MAPPING_VALUE);
-			return self.node(true);
+			return self.node_or_empty(BLOCK_MAPPING_VALUE, true, T_KEY, T_VALUE, T_BLOCK_END);
 		default:
 			return self.fail(t, "expected a mapping key or a less indented line");
 	}
@@ -304,16 +304,8 @@ fn Event? Parser.block_mapping_value(&self)
 		return empty_scalar(t.start);
 	}
 	self.scanner.next_token()!;
-	Token n = self.scanner.peek_token()!;
-	if (n.is(T_KEY, T_VALUE, T_BLOCK_END))
-	{
-		self.state = BLOCK_MAPPING_KEY;
-		return empty_scalar(t.start);
-	}
-	self.states.push(BLOCK_MAPPING_KEY);
-	return self.node(true);
+	return self.node_or_empty(BLOCK_MAPPING_KEY, true, T_KEY, T_VALUE, T_BLOCK_END);
 }
-
 
 // ---- flow collections ----------------------------------------------------
 
@@ -351,13 +343,7 @@ fn Event? Parser.flow_sequence_entry(&self, bool first)
 }
 
 fn Event? Parser.flow_sequence_entry_mapping_key(&self)
-{
-	Token t = self.scanner.peek_token()!;
-	self.state = FLOW_SEQUENCE_ENTRY_MAPPING_VALUE;
-	if (t.is(T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
-	self.states.push(FLOW_SEQUENCE_ENTRY_MAPPING_VALUE);
-	return self.node(false);
-}
+	=> self.node_or_empty(FLOW_SEQUENCE_ENTRY_MAPPING_VALUE, false, T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END);
 
 fn Event? Parser.flow_sequence_entry_mapping_value(&self)
 {
@@ -365,10 +351,7 @@ fn Event? Parser.flow_sequence_entry_mapping_value(&self)
 	self.state = FLOW_SEQUENCE_ENTRY_MAPPING_END;
 	if (t.type != T_VALUE) return empty_scalar(t.start);
 	self.scanner.next_token()!;
-	t = self.scanner.peek_token()!;
-	if (t.is(T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
-	self.states.push(FLOW_SEQUENCE_ENTRY_MAPPING_END);
-	return self.node(false);
+	return self.node_or_empty(FLOW_SEQUENCE_ENTRY_MAPPING_END, false, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END);
 }
 
 // "{a: 1, b, : c}": a missing key or value is an empty scalar.
@@ -381,14 +364,7 @@ fn Event? Parser.flow_mapping_key(&self, bool first)
 		if (t.type == T_KEY)
 		{
 			self.scanner.next_token()!;
-			t = self.scanner.peek_token()!;
-			if (t.is(T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END))
-			{
-				self.state = FLOW_MAPPING_VALUE;
-				return empty_scalar(t.start);
-			}
-			self.states.push(FLOW_MAPPING_VALUE);
-			return self.node(false);
+			return self.node_or_empty(FLOW_MAPPING_VALUE, false, T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END);
 		}
 		if (t.type == T_VALUE)
 		{
@@ -412,8 +388,5 @@ fn Event? Parser.flow_mapping_value(&self, bool empty)
 	self.state = FLOW_MAPPING_KEY;
 	if (empty || t.type != T_VALUE) return empty_scalar(t.start);
 	self.scanner.next_token()!;
-	t = self.scanner.peek_token()!;
-	if (t.is(T_FLOW_ENTRY, T_FLOW_MAPPING_END)) return empty_scalar(t.start);
-	self.states.push(FLOW_MAPPING_KEY);
-	return self.node(false);
+	return self.node_or_empty(FLOW_MAPPING_KEY, false, T_FLOW_ENTRY, T_FLOW_MAPPING_END);
 }

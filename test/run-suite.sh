@@ -34,7 +34,7 @@ done < <(find test-suite/ -name in.yaml -not -path '*/tags/*' -not -path '*/name
 
 echo "valid PASS $vp/$((vp+vf))  error PASS $ep/$((ep+ef))"
 echo "PASS $((vp+ep)) / FAIL $((vf+ef)) / $((vp+vf+ep+ef))"
-[ $verbose -eq 1 ] && printf '%s\n' "${failed[@]}"
+[ $verbose -eq 1 ] && [ ${#failed[@]} -gt 0 ] && printf '%s\n' "${failed[@]}"
 if [ $json -eq 1 ]; then
 	if ! command -v python3 >/dev/null; then
 		echo "json: skipped (python3 not found)"

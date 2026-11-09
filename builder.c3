@@ -1,6 +1,5 @@
 module yaml;
 
-import std::io;
 import std::collections::map, std::collections::object;
 import yaml::parser;
 
@@ -153,32 +152,10 @@ fn Object*? Builder.scalar(&self, Event e)
 	return self.error(e.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
 }
 
-fn bool is_null_text(String v)
-{
-	switch (v)
-	{
-		case "":
-		case "~":
-		case "null":
-		case "Null":
-		case "NULL": return true;
-		default: return false;
-	}
-}
-
-fn bool is_bool_text(String v)
-{
-	switch (v)
-	{
-		case "true":
-		case "True":
-		case "TRUE":
-		case "false":
-		case "False":
-		case "FALSE": return true;
-		default: return false;
-	}
-}
+fn bool is_null_text(String v) => v == "" || v == "~" || v == "null" || v == "Null" || v == "NULL";
+fn bool is_bool_text(String v) => v == "true" || v == "True" || v == "TRUE" || v == "false" || v == "False" || v == "FALSE";
+fn bool is_inf_text(String v) => v == ".inf" || v == ".Inf" || v == ".INF";   // without the sign
+fn bool is_nan_text(String v) => v == ".nan" || v == ".NaN" || v == ".NAN";
 
 // Number of characters from `*i` on that are digits in `base`; advances `*i`.
 fn sz digits(String v, sz* i, int base = 10)
@@ -202,15 +179,8 @@ fn bool is_int_text(String v)
 fn bool is_float_text(String v)
 {
 	sz i = v.len && (v[0] == '-' || v[0] == '+') ? 1 : 0;
-	switch (v[i..])
-	{
-		case ".inf":
-		case ".Inf":
-		case ".INF": return true;
-		case ".nan":
-		case ".NaN":
-		case ".NAN": return i == 0;
-	}
+	if (is_inf_text(v[i..])) return true;
+	if (is_nan_text(v)) return true;
 	sz whole = digits(v, &i);
 	if (i < v.len && v[i] == '.')
 	{
@@ -232,15 +202,7 @@ fn bool is_float_text(String v)
 
 fn double? float_value(String v)
 {
-	String unsigned = v.len && (v[0] == '-' || v[0] == '+') ? v[1..] : v;
-	switch (unsigned)
-	{
-		case ".inf":
-		case ".Inf":
-		case ".INF": return v[0] == '-' ? -double::inf : double::inf;
-		case ".nan":
-		case ".NaN":
-		case ".NAN": return double::nan;
-		default: return v.to_double();
-	}
+	if (is_nan_text(v)) return double::nan;
+	if (is_inf_text(v[(v[0] == '-' || v[0] == '+') ? 1 : 0..])) return v[0] == '-' ? -double::inf : double::inf;
+	return v.to_double();
 }

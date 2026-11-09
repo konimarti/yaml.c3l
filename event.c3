@@ -1,7 +1,7 @@
+// Events (one test.event line each), their marks and styles.
 module yaml::parser;
 
 import std::io;
-import std::collections::list;
 
 faultdef SYNTAX_ERROR;
 
