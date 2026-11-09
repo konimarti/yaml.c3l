@@ -130,7 +130,7 @@ fn YamlData? from_stream(InStream reader, Allocator allocator = mem, bool verbos
 
 fn YamlData? from_file(String filename, Allocator allocator = mem, bool verbose = true)
 {
-	File f = io::file::open(filename, "r")!;
+	File f = io::file::open(filename, "rb")!;
 	defer (void)f.close();
 	return from_stream(&f, allocator, verbose)!;
 }
