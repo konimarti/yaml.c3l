@@ -14,7 +14,7 @@ language](http://c3-lang.org).
 * Includes a command-line tool `yamlv` to validate YAML, print the event stream, or convert
   to JSON.
 
-Requires [c3c](https://github.com/c3lang/c3c) v0.8.6 or newer.
+Requires [c3c](https://github.com/c3lang/c3c) v0.8.5 or newer.
 
 ### Usage
 
