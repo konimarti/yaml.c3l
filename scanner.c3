@@ -3,14 +3,14 @@ module yaml::parser;
 import std::io, std::collections::list;
 
 faultdef INVALID_INDENTATION, MISSING_COLON, INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE,
-	INVALID_BLOCK_HEADER;
+	INVALID_BLOCK_HEADER, UNCLOSED_FLOW;
 
-// Mark, ScalarStyle and SYNTAX_ERROR stay in event.c3. Move TokenType/Token from event.c3 to here.
 enum TokenType : char
 {
 	T_STREAM_START, T_STREAM_END, T_DOCUMENT_START, T_DOCUMENT_END,
 	T_BLOCK_SEQUENCE_START, T_BLOCK_MAPPING_START, T_BLOCK_END,
-	T_BLOCK_ENTRY, T_KEY, T_VALUE, T_SCALAR
+	T_FLOW_SEQUENCE_START, T_FLOW_SEQUENCE_END, T_FLOW_MAPPING_START, T_FLOW_MAPPING_END,
+	T_BLOCK_ENTRY, T_FLOW_ENTRY, T_KEY, T_VALUE, T_SCALAR
 }
 struct Token { TokenType type; Mark start; String value; ScalarStyle style; }
 
@@ -21,6 +21,7 @@ struct SimpleKey
 	bool required;     // block context and key at the current indent: losing it is an error
 	bool compact_ok;   // may open a new block mapping on this line
 	bool tab_indent;   // its line has a TAB in the indentation
+	bool flow_map;     // the level is a flow mapping: the key may span lines ("{a\n: b}")
 	sz token_number;   // absolute token index (tokens_taken + index in queue)
 	Mark mark;
 }
@@ -39,7 +40,9 @@ struct Scanner
 	bool simple_key_allowed;
 	bool compact_ok;           // true at line start and after '-', '?', ':'(explicit) + spaces
 	bool tab_indent;           // current line has a TAB before its first token
-	SimpleKey key;             // M4: List {SimpleKey}, one per flow level
+	List {SimpleKey} keys;     // one possible simple key per flow level, [0] = block context
+	int flow_level;            // depth of '[' / '{' nesting
+	int json_line;             // line of a just scanned quoted scalar or flow end ("{"a":b}"), or 0
 	Mark error_mark;           // position of the last reported error
 }
 
@@ -48,7 +51,14 @@ fn void Scanner.init(&self, String s, bool verbose = true)
 	*self = { .s = normalize_breaks(s), .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
 	self.tokens.tinit();
 	self.indents.tinit();
+	self.keys.tinit();
+	self.keys.push({});
 }
+
+// The simple key slot of the current flow level.
+fn SimpleKey* Scanner.key(&self) @inline => self.keys.get_ref(self.keys.len() - 1);
+
+fn bool is_flow_indicator(char c) => c == ',' || c == '[' || c == ']' || c == '{' || c == '}';
 
 // "\r\n" and "\r" are line breaks: rewrite them as "\n" (a tmem copy, only if needed).
 fn String normalize_breaks(String s)
@@ -132,8 +142,10 @@ fn void? Scanner.fetch_more_tokens(&self)
 	{
 		if (self.tokens.len() > 0)
 		{
-			self.stale_simple_key()!;
-			if (!self.key.possible || self.key.token_number != self.tokens_taken) return;
+			self.stale_simple_keys()!;
+			bool head_may_be_key = false;
+			foreach (k : self.keys) head_may_be_key |= k.possible && k.token_number == self.tokens_taken;
+			if (!head_may_be_key) return;
 		}
 		if (self.stream_end_done) return;
 		self.fetch_next_token()!;
@@ -155,19 +167,48 @@ fn void? Scanner.fetch_next_token(&self)
 		self.push(T_STREAM_START, self.mark);
 		return;
 	}
+	int line = self.mark.line;
 	self.scan_to_next_token();
-	self.stale_simple_key()!;
-	self.unroll_indent(self.col());
+	self.stale_simple_keys()!;
+	// the previous token is a JSON-like key: ':' may follow directly (in a flow map, on a later line)
+	bool json_key = self.json_line && (self.json_line == self.mark.line || self.key().flow_map);
+	self.json_line = 0;
+	if (self.flow_level)
+	{
+		// every line inside a flow collection is indented more than the enclosing block
+		if (self.mark.line != line && !self.at_end() && self.line_indent() <= self.indent)
+		{
+			return self.error(self.mark, "flow collection line is not indented enough", INVALID_INDENTATION)~;
+		}
+	}
+	else
+	{
+		self.unroll_indent(self.col());
+	}
 	if (self.at_end()) return self.fetch_stream_end();
 	char c = self.peek();
 	char n = self.peek(1);
-	if (c == '-' && is_blankz(n)) return self.fetch_block_entry();
-	if (c == ':' && is_blankz(n)) return self.fetch_value();
-	if (c == '?' && is_blankz(n)) return self.fetch_key();
+	bool flow = self.flow_level > 0;
+	bool ends_indicator = is_blankz(n) || (flow && is_flow_indicator(n));   // "- ", "? ", ": " (flow: "-,")
+	if (c == '[' || c == '{') return self.fetch_flow_start(c == '[' ? T_FLOW_SEQUENCE_START : T_FLOW_MAPPING_START);
+	if (c == ']' || c == '}') return self.fetch_flow_end(c == ']' ? T_FLOW_SEQUENCE_END : T_FLOW_MAPPING_END);
+	if (c == ',') return self.fetch_flow_entry();
+	if (c == '-' && ends_indicator)
+	{
+		if (flow) return self.error(self.mark, "block sequence entries are not allowed in a flow collection")~;
+		return self.fetch_block_entry();
+	}
+	if (c == ':' && (ends_indicator || (flow && json_key))) return self.fetch_value();
+	if (c == '?' && ends_indicator) return self.fetch_key();
 	if (self.at_marker()) return self.fetch_document_indicator(c == '-' ? T_DOCUMENT_START : T_DOCUMENT_END);
 	if (c == '\'' || c == '"') return self.fetch_flow_scalar(c == '\'');
-	if (c == '|' || c == '>') return self.fetch_block_scalar(c == '|');
-	// M4: flow indicators, M5: properties and directives
+	if (c == '|' || c == '>')
+	{
+		if (flow) return self.error(self.mark, "block scalars are not allowed in a flow collection")~;
+		return self.fetch_block_scalar(c == '|');
+	}
+	if (c == '#') return self.error(self.mark, "a comment needs a blank before '#'")~;
+	// M5: properties and directives
 	if (INDICATORS.contains_char(c)) return self.error(self.mark, "character not supported yet")~;
 	return self.fetch_plain();
 }
@@ -188,14 +229,14 @@ fn void Scanner.scan_to_next_token(&self)
 			self.compact_ok = false;
 			self.advance();
 		}
-		else if (c == '#')
+		else if (c == '#' && (self.mark.pos == 0 || is_blankz(self.s[self.mark.pos - 1])))
 		{
 			while (!self.at_end() && self.peek() != '\n') self.advance();
 		}
 		else if (c == '\n')
 		{
 			self.advance();
-			self.simple_key_allowed = true;   // block context only (M4: flow_level == 0)
+			self.simple_key_allowed = true;
 			self.compact_ok = true;
 			self.tab_indent = false;
 		}
@@ -241,9 +282,11 @@ fn void? Scanner.save_simple_key(&self)
 {
 	if (!self.simple_key_allowed) return;
 	self.remove_simple_key()!;
-	self.key = {
+	SimpleKey* k = self.key();
+	*k = {
 		.possible = true,
-		.required = self.indent == self.col(),
+		.flow_map = k.flow_map,
+		.required = !self.flow_level && self.indent == self.col(),
 		.compact_ok = self.compact_ok,
 		.tab_indent = self.tab_indent,
 		.token_number = self.tokens_taken + self.tokens.len(),
@@ -253,25 +296,31 @@ fn void? Scanner.save_simple_key(&self)
 
 fn void? Scanner.remove_simple_key(&self)
 {
-	if (self.key.possible && self.key.required)
+	SimpleKey* k = self.key();
+	if (k.possible && k.required)
 	{
-		return self.error(self.key.mark, "could not find expected ':'", MISSING_COLON)~;
+		return self.error(k.mark, "could not find expected ':'", MISSING_COLON)~;
 	}
-	self.key.possible = false;
+	k.possible = false;
 }
 
 // Implicit keys are single-line and at most 1024 characters.
-fn void? Scanner.stale_simple_key(&self)
+fn void? Scanner.stale_simple_keys(&self)
 {
-	if (!self.key.possible) return;
-	if (self.key.mark.line == self.mark.line && self.mark.pos - self.key.mark.pos <= 1024) return;
-	self.remove_simple_key()!;
+	foreach (&k : self.keys)
+	{
+		if (!k.possible) continue;
+		if ((k.mark.line == self.mark.line || k.flow_map) && self.mark.pos - k.mark.pos <= 1024) continue;
+		if (k.required) return self.error(k.mark, "could not find expected ':'", MISSING_COLON)~;
+		k.possible = false;
+	}
 }
 
 // ---- indicators ----------------------------------------------------------
 
 fn void? Scanner.fetch_stream_end(&self)
 {
+	if (self.flow_level) return self.error(self.mark, "unclosed flow collection: missing ']' or '}'", UNCLOSED_FLOW)~;
 	self.unroll_indent(-1);
 	self.remove_simple_key()!;
 	self.simple_key_allowed = false;
@@ -300,27 +349,34 @@ fn void? Scanner.fetch_block_entry(&self)
 
 fn void? Scanner.fetch_value(&self)
 {
-	if (self.key.possible)
+	SimpleKey* k = self.key();
+	if (k.possible)
 	{
-		SimpleKey k = self.key;
-		if (k.tab_indent) return self.error(k.mark, "tab character in indentation", INVALID_TAB)~;
-		if (self.indent < k.mark.column - 1 && !k.compact_ok)
+		if (!self.flow_level)
 		{
-			return self.error(k.mark, "mapping values are not allowed here")~;
+			if (k.tab_indent) return self.error(k.mark, "tab character in indentation", INVALID_TAB)~;
+			if (self.indent < k.mark.column - 1 && !k.compact_ok)
+			{
+				return self.error(k.mark, "mapping values are not allowed here")~;
+			}
 		}
 		self.tokens.insert_at(k.token_number - self.tokens_taken, { .type = T_KEY, .start = k.mark });
-		self.roll_indent(k.mark.column - 1, T_BLOCK_MAPPING_START, k.mark, k.token_number);
-		self.key.possible = false;
+		if (!self.flow_level) self.roll_indent(k.mark.column - 1, T_BLOCK_MAPPING_START, k.mark, k.token_number);
+		k.possible = false;
 		self.simple_key_allowed = false;
 		self.compact_ok = false;   // "a: - b", "a: b: c"
 	}
-	else
+	else if (!self.flow_level)
 	{
 		// value of an explicit '?' key, or an empty key
 		if (!self.simple_key_allowed) return self.error(self.mark, "mapping values are not allowed here")~;
 		self.roll_indent(self.col(), T_BLOCK_MAPPING_START, self.mark);
 		self.simple_key_allowed = true;
 		self.compact_ok = self.peek(1) == ' ';
+	}
+	else
+	{
+		self.simple_key_allowed = false;   // "{? a : b}", "{: b}"
 	}
 	Mark m = self.mark;
 	self.advance();
@@ -329,8 +385,8 @@ fn void? Scanner.fetch_value(&self)
 
 fn void? Scanner.fetch_key(&self)
 {
-	if (self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
-	if (self.indent < self.col())
+	if (!self.flow_level && self.tab_indent) return self.error(self.mark, "tab character in indentation", INVALID_TAB)~;
+	if (!self.flow_level && self.indent < self.col())
 	{
 		if (!self.compact_ok || !self.simple_key_allowed) return self.error(self.mark, "explicit keys are not allowed here")~;
 		self.roll_indent(self.col(), T_BLOCK_MAPPING_START, self.mark);
@@ -338,15 +394,53 @@ fn void? Scanner.fetch_key(&self)
 	self.remove_simple_key()!;
 	Mark m = self.mark;
 	self.advance();
-	self.simple_key_allowed = true;
+	self.simple_key_allowed = !self.flow_level;
 	self.compact_ok = self.peek() == ' ';
 	self.push(T_KEY, m);
 }
 
-const String INDICATORS = "[]{},&*!%@`#";
+// '[' or '{': the collection may itself be an implicit key ("[a]: b").
+fn void? Scanner.fetch_flow_start(&self, TokenType type)
+{
+	self.save_simple_key()!;
+	self.keys.push({ .flow_map = type == T_FLOW_MAPPING_START });
+	self.flow_level++;
+	Mark m = self.mark;
+	self.advance();
+	self.simple_key_allowed = true;
+	self.compact_ok = false;
+	self.push(type, m);
+}
+
+fn void? Scanner.fetch_flow_end(&self, TokenType type)
+{
+	if (!self.flow_level) return self.error(self.mark, "closing bracket without an opening one")~;
+	if (self.key().flow_map != (type == T_FLOW_MAPPING_END)) return self.error(self.mark, "closing bracket does not match the opening one")~;
+	self.remove_simple_key()!;
+	self.keys.pop()!!;
+	self.flow_level--;
+	Mark m = self.mark;
+	self.advance();
+	self.simple_key_allowed = false;
+	self.json_line = self.mark.line;
+	self.push(type, m);
+}
+
+fn void? Scanner.fetch_flow_entry(&self)
+{
+	if (!self.flow_level) return self.error(self.mark, "',' outside a flow collection")~;
+	self.remove_simple_key()!;
+	Mark m = self.mark;
+	self.advance();
+	self.simple_key_allowed = true;
+	self.push(T_FLOW_ENTRY, m);
+}
+
+const String INDICATORS = "&*!%@`";
 
 fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 {
+	if (self.flow_level) return self.error(self.mark, "document marker inside a flow collection")~;
 	self.unroll_indent(-1);
 	self.remove_simple_key()!;
 	self.simple_key_allowed = false;
@@ -385,6 +479,7 @@ fn void? Scanner.fetch_plain(&self)
 fn String Scanner.scan_plain(&self)
 {
 	DString buf = dstring::temp();
+	bool flow = self.flow_level > 0;
 	int breaks = 0;   // line breaks between the previous text and this line
 	while (true)
 	{
@@ -394,7 +489,8 @@ fn String Scanner.scan_plain(&self)
 		while (!self.at_end())
 		{
 			char c = self.peek();
-			if (c == '\n' || (c == ':' && is_blankz(self.peek(1)))) break;
+			if (c == '\n' || (c == ':' && (is_blankz(self.peek(1)) || (flow && is_flow_indicator(self.peek(1)))))) break;
+			if (flow && is_flow_indicator(c)) break;
 			if (c == '#' && self.mark.pos > start && (self.s[self.mark.pos - 1] == ' ' || self.s[self.mark.pos - 1] == '\t')) break;
 			self.advance();
 			if (c != ' ' && c != '\t') end = self.mark.pos;
@@ -446,11 +542,13 @@ fn void? Scanner.fetch_flow_scalar(&self, bool single)
 	String value = self.scan_flow_scalar(single)!;
 	self.simple_key_allowed = false;
 	self.compact_ok = false;
-	// only blanks, then ':', a comment or the end of the line may follow (M4: ", ] }" in flow)
+	self.json_line = self.mark.line;
+	// only blanks, then ':', a comment or the end of the line may follow (in flow also ", ] }")
 	sz i = self.mark.pos;
 	while (i < self.s.len && (self.s[i] == ' ' || self.s[i] == '\t')) i++;
 	char c = i < self.s.len ? self.s[i] : '\n';
-	bool ok = c == '\n' || (c == '#' && i > self.mark.pos) || (c == ':' && (i + 1 == self.s.len || is_blankz(self.s[i + 1])));
+	bool ok = c == '\n' || c == '#' || (c == ':' && (i + 1 == self.s.len || is_blankz(self.s[i + 1])));
+	if (self.flow_level) ok |= c == ':' || c == ',' || c == ']' || c == '}';
 	if (!ok) return self.error(self.mark, "unexpected text after a quoted scalar")~;
 	self.tokens.push({ .type = T_SCALAR, .start = m, .value = value, .style = single ? SINGLE : DOUBLE });
 }

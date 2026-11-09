@@ -7,7 +7,10 @@ enum State : char
 {
 	STREAM_START, IMPLICIT_DOCUMENT_START, DOCUMENT_START, DOCUMENT_CONTENT, DOCUMENT_END,
 	BLOCK_NODE, BLOCK_SEQUENCE_ENTRY, INDENTLESS_SEQUENCE_ENTRY,
-	BLOCK_MAPPING_KEY, BLOCK_MAPPING_VALUE, END
+	BLOCK_MAPPING_KEY, BLOCK_MAPPING_VALUE,
+	FLOW_SEQUENCE_FIRST_ENTRY, FLOW_SEQUENCE_ENTRY, FLOW_SEQUENCE_ENTRY_MAPPING_KEY,
+	FLOW_SEQUENCE_ENTRY_MAPPING_VALUE, FLOW_SEQUENCE_ENTRY_MAPPING_END,
+	FLOW_MAPPING_FIRST_KEY, FLOW_MAPPING_KEY, FLOW_MAPPING_VALUE, FLOW_MAPPING_EMPTY_VALUE, END
 }
 
 struct Parser
@@ -42,6 +45,17 @@ fn Event? Parser.next(&self)
 		case INDENTLESS_SEQUENCE_ENTRY: return self.indentless_sequence_entry();
 		case BLOCK_MAPPING_KEY: return self.block_mapping_key();
 		case BLOCK_MAPPING_VALUE: return self.block_mapping_value();
+		case FLOW_SEQUENCE_FIRST_ENTRY: return self.flow_sequence_entry(true);
+		case FLOW_SEQUENCE_ENTRY: return self.flow_sequence_entry(false);
+		case FLOW_SEQUENCE_ENTRY_MAPPING_KEY: return self.flow_sequence_entry_mapping_key();
+		case FLOW_SEQUENCE_ENTRY_MAPPING_VALUE: return self.flow_sequence_entry_mapping_value();
+		case FLOW_SEQUENCE_ENTRY_MAPPING_END:
+			self.state = FLOW_SEQUENCE_ENTRY;
+			return { .type = MAPPING_END, .start = self.scanner.peek_token()!.start };
+		case FLOW_MAPPING_FIRST_KEY: return self.flow_mapping_key(true);
+		case FLOW_MAPPING_KEY: return self.flow_mapping_key(false);
+		case FLOW_MAPPING_VALUE: return self.flow_mapping_value(false);
+		case FLOW_MAPPING_EMPTY_VALUE: return self.flow_mapping_value(true);
 		case END: return SYNTAX_ERROR~;
 	}
 }
@@ -129,6 +143,14 @@ fn Event? Parser.node(&self, bool indentless_sequence)
 			self.scanner.next_token()!;
 			self.state = BLOCK_MAPPING_KEY;
 			return { .type = MAPPING_START, .start = t.start };
+		case T_FLOW_SEQUENCE_START:
+			self.scanner.next_token()!;
+			self.state = FLOW_SEQUENCE_FIRST_ENTRY;
+			return { .type = SEQUENCE_START, .explicit = true, .start = t.start };
+		case T_FLOW_MAPPING_START:
+			self.scanner.next_token()!;
+			self.state = FLOW_MAPPING_FIRST_KEY;
+			return { .type = MAPPING_START, .explicit = true, .start = t.start };
 		default:
 			break;
 	}
@@ -214,3 +236,107 @@ fn Event? Parser.block_mapping_value(&self)
 	return self.node(true);
 }
 
+
+// ---- flow collections ----------------------------------------------------
+
+// Entries are separated by ','; a trailing ',' before ']' is allowed.
+fn Event? Parser.flow_sequence_entry(&self, bool first)
+{
+	Token t = self.scanner.peek_token()!;
+	if (t.type != T_FLOW_SEQUENCE_END)
+	{
+		if (!first)
+		{
+			if (t.type != T_FLOW_ENTRY) return self.fail(t, "expected ',' or ']'");
+			self.scanner.next_token()!;
+			t = self.scanner.peek_token()!;
+		}
+		if (t.type == T_KEY || t.type == T_VALUE)   // "[a: b]", "[? a : b]", "[: b]": a single-pair map
+		{
+			if (t.type == T_KEY) self.scanner.next_token()!;
+			self.state = FLOW_SEQUENCE_ENTRY_MAPPING_KEY;
+			return { .type = MAPPING_START, .explicit = true, .start = t.start };
+		}
+		if (t.type != T_FLOW_SEQUENCE_END)
+		{
+			self.states.push(FLOW_SEQUENCE_ENTRY);
+			return self.node(false);
+		}
+	}
+	self.scanner.next_token()!;
+	self.state = self.states.pop()!!;
+	return { .type = SEQUENCE_END, .start = t.start };
+}
+
+fn Event? Parser.flow_sequence_entry_mapping_key(&self)
+{
+	Token t = self.scanner.peek_token()!;
+	self.state = FLOW_SEQUENCE_ENTRY_MAPPING_VALUE;
+	if (self.peek_is(t, T_VALUE, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
+	self.states.push(FLOW_SEQUENCE_ENTRY_MAPPING_VALUE);
+	return self.node(false);
+}
+
+fn Event? Parser.flow_sequence_entry_mapping_value(&self)
+{
+	Token t = self.scanner.peek_token()!;
+	self.state = FLOW_SEQUENCE_ENTRY_MAPPING_END;
+	if (t.type != T_VALUE) return empty_scalar(t.start);
+	self.scanner.next_token()!;
+	t = self.scanner.peek_token()!;
+	if (self.peek_is(t, T_FLOW_ENTRY, T_FLOW_SEQUENCE_END)) return empty_scalar(t.start);
+	self.states.push(FLOW_SEQUENCE_ENTRY_MAPPING_END);
+	return self.node(false);
+}
+
+// "{a: 1, b, : c}": a missing key or value is an empty scalar.
+fn Event? Parser.flow_mapping_key(&self, bool first)
+{
+	Token t = self.scanner.peek_token()!;
+	if (t.type != T_FLOW_MAPPING_END)
+	{
+		if (!first)
+		{
+			if (t.type != T_FLOW_ENTRY) return self.fail(t, "expected ',' or '}'");
+			self.scanner.next_token()!;
+			t = self.scanner.peek_token()!;
+		}
+		if (t.type == T_KEY)
+		{
+			self.scanner.next_token()!;
+			t = self.scanner.peek_token()!;
+			if (self.peek_is(t, T_VALUE, T_FLOW_ENTRY, T_FLOW_MAPPING_END))
+			{
+				self.state = FLOW_MAPPING_VALUE;
+				return empty_scalar(t.start);
+			}
+			self.states.push(FLOW_MAPPING_VALUE);
+			return self.node(false);
+		}
+		if (t.type == T_VALUE)
+		{
+			self.state = FLOW_MAPPING_VALUE;
+			return empty_scalar(t.start);
+		}
+		if (t.type != T_FLOW_MAPPING_END)
+		{
+			self.states.push(FLOW_MAPPING_EMPTY_VALUE);
+			return self.node(false);
+		}
+	}
+	self.scanner.next_token()!;
+	self.state = self.states.pop()!!;
+	return { .type = MAPPING_END, .start = t.start };
+}
+
+fn Event? Parser.flow_mapping_value(&self, bool empty)
+{
+	Token t = self.scanner.peek_token()!;
+	self.state = FLOW_MAPPING_KEY;
+	if (empty || t.type != T_VALUE) return empty_scalar(t.start);
+	self.scanner.next_token()!;
+	t = self.scanner.peek_token()!;
+	if (self.peek_is(t, T_FLOW_ENTRY, T_FLOW_MAPPING_END)) return empty_scalar(t.start);
+	self.states.push(FLOW_MAPPING_KEY);
+	return self.node(false);
+}

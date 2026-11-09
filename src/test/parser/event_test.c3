@@ -75,12 +75,12 @@ fn void escaping_test() @test => @pool()
 	}
 }
 
-fn void unsupported_bracket() @test => @pool()
+fn void unmatched_bracket() @test => @pool()
 {
-	// [a] should return SYNTAX_ERROR
+	// "]" without "[" should return SYNTAX_ERROR (until M4 this test used "[a]", then unsupported)
 	// The first event is STREAM_START, then the second call should error
 	Parser p;
-	p.init("[a]\n", false);
+	p.init("]\n", false);
 	Event? e1 = p.next(); // STREAM_START
 	if (catch err = e1)
 	{
