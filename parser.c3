@@ -13,11 +13,14 @@ enum State : char
 	FLOW_MAPPING_FIRST_KEY, FLOW_MAPPING_KEY, FLOW_MAPPING_VALUE, FLOW_MAPPING_EMPTY_VALUE, END
 }
 
+struct TagDirective { String handle; String prefix; }
+
 struct Parser
 {
 	Scanner scanner;
 	State state;
 	List {State} states;   // where to continue after the current node
+	List {TagDirective} tag_directives;   // %TAG handles of the current document
 }
 
 fn Parser* Parser.init(&self, String input, bool verbose = true)
@@ -25,6 +28,7 @@ fn Parser* Parser.init(&self, String input, bool verbose = true)
 	*self = {};
 	self.scanner.init(input, verbose);
 	self.states.tinit();
+	self.tag_directives.tinit();
 	return self;
 }
 
@@ -89,6 +93,12 @@ fn Event? Parser.document_start(&self, bool implicit)
 		self.state = END;
 		return { .type = STREAM_END, .start = t.start };
 	}
+	if (t.type == T_VERSION_DIRECTIVE || t.type == T_TAG_DIRECTIVE)
+	{
+		if (!implicit) return self.fail(t, "a directive after a document needs '...' first");
+		t = self.directives()!;
+		if (t.type != T_DOCUMENT_START) return self.fail(t, "expected '---' after the directives");
+	}
 	self.states.push(DOCUMENT_END);
 	if (t.type == T_DOCUMENT_START)
 	{
@@ -101,10 +111,47 @@ fn Event? Parser.document_start(&self, bool implicit)
 	return { .type = DOCUMENT_START, .start = t.start };
 }
 
+// %YAML (at most once) and %TAG (each handle once); returns the token after them.
+fn Token? Parser.directives(&self)
+{
+	bool version;
+	Token t = self.scanner.peek_token()!;
+	while (t.type == T_VERSION_DIRECTIVE || t.type == T_TAG_DIRECTIVE)
+	{
+		if (t.type == T_VERSION_DIRECTIVE)
+		{
+			if (version) return self.scanner.error(t.start, "duplicate %YAML directive", INVALID_DIRECTIVE)~;
+			version = true;
+		}
+		else
+		{
+			foreach (d : self.tag_directives)
+			{
+				if (d.handle == t.handle) return self.scanner.error(t.start, "duplicate %TAG handle", INVALID_DIRECTIVE)~;
+			}
+			self.tag_directives.push({ t.handle, t.value });
+		}
+		self.scanner.next_token()!;
+		t = self.scanner.peek_token()!;
+	}
+	return t;
+}
+
+// prefix + suffix; "!" alone is the non-specific tag "!".
+fn String? Parser.resolve_tag(&self, Token t)
+{
+	if (!t.handle.len) return t.value;   // verbatim
+	if (t.handle == "!" && !t.value.len) return "!";
+	foreach (d : self.tag_directives) if (d.handle == t.handle) return d.prefix.tconcat(t.value);
+	if (t.handle == "!") return "!".tconcat(t.value);
+	if (t.handle == "!!") return "tag:yaml.org,2002:".tconcat(t.value);
+	return self.scanner.error(t.start, "undefined tag handle", UNDEFINED_TAG_HANDLE)~;
+}
+
 fn Event? Parser.document_content(&self)
 {
 	Token t = self.scanner.peek_token()!;
-	if (self.peek_is(t, T_DOCUMENT_START, T_DOCUMENT_END, T_STREAM_END))
+	if (self.peek_is(t, T_DOCUMENT_START, T_DOCUMENT_END, T_STREAM_END, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE))
 	{
 		self.state = self.states.pop()!!;
 		return empty_scalar(t.start);
@@ -118,43 +165,73 @@ fn Event? Parser.document_end(&self)
 	bool explicit = t.type == T_DOCUMENT_END;
 	if (explicit) self.scanner.next_token()!;
 	self.state = explicit ? IMPLICIT_DOCUMENT_START : DOCUMENT_START;
+	self.tag_directives.clear();
 	return { .type = DOCUMENT_END, .explicit = explicit, .start = t.start };
 }
 
-// One node; the state to return to is on top of `states`.
+// One node with its optional properties (one anchor, one tag, in either order); the state to
+// return to is on top of `states`. Properties without a node give an empty scalar.
 fn Event? Parser.node(&self, bool indentless_sequence)
 {
 	Token t = self.scanner.peek_token()!;
+	Event e = { .start = t.start };
+	bool props;
+	while (t.type == T_ANCHOR || t.type == T_TAG)
+	{
+		if (t.type == T_ANCHOR)
+		{
+			if (e.anchor.len) return self.fail(t, "a node can have only one anchor");
+			e.anchor = t.value;
+		}
+		else
+		{
+			if (e.tag.len) return self.fail(t, "a node can have only one tag");
+			e.tag = self.resolve_tag(t)!;
+		}
+		props = true;
+		self.scanner.next_token()!;
+		t = self.scanner.peek_token()!;
+	}
 	switch (t.type)
 	{
+		case T_ALIAS:
+			if (props) return self.fail(t, "an alias cannot have properties");
+			self.scanner.next_token()!;
+			self.state = self.states.pop()!!;
+			return { .type = ALIAS, .anchor = t.value, .start = t.start };
 		case T_BLOCK_ENTRY:
 			if (!indentless_sequence) break;
 			self.state = INDENTLESS_SEQUENCE_ENTRY;
-			return { .type = SEQUENCE_START, .start = t.start };
+			e.type = SEQUENCE_START;
+			return e;
 		case T_SCALAR:
 			self.scanner.next_token()!;
 			self.state = self.states.pop()!!;
-			return { .type = SCALAR, .style = t.style, .value = t.value, .start = t.start };
+			e.type = SCALAR;
+			e.style = t.style;
+			e.value = t.value;
+			return e;
 		case T_BLOCK_SEQUENCE_START:
-			self.scanner.next_token()!;
-			self.state = BLOCK_SEQUENCE_ENTRY;
-			return { .type = SEQUENCE_START, .start = t.start };
-		case T_BLOCK_MAPPING_START:
-			self.scanner.next_token()!;
-			self.state = BLOCK_MAPPING_KEY;
-			return { .type = MAPPING_START, .start = t.start };
 		case T_FLOW_SEQUENCE_START:
 			self.scanner.next_token()!;
-			self.state = FLOW_SEQUENCE_FIRST_ENTRY;
-			return { .type = SEQUENCE_START, .explicit = true, .start = t.start };
+			self.state = t.type == T_BLOCK_SEQUENCE_START ? BLOCK_SEQUENCE_ENTRY : FLOW_SEQUENCE_FIRST_ENTRY;
+			e.type = SEQUENCE_START;
+			e.explicit = t.type == T_FLOW_SEQUENCE_START;
+			return e;
+		case T_BLOCK_MAPPING_START:
 		case T_FLOW_MAPPING_START:
 			self.scanner.next_token()!;
-			self.state = FLOW_MAPPING_FIRST_KEY;
-			return { .type = MAPPING_START, .explicit = true, .start = t.start };
+			self.state = t.type == T_BLOCK_MAPPING_START ? BLOCK_MAPPING_KEY : FLOW_MAPPING_FIRST_KEY;
+			e.type = MAPPING_START;
+			e.explicit = t.type == T_FLOW_MAPPING_START;
+			return e;
 		default:
 			break;
 	}
-	return self.fail(t, "expected a node");
+	if (!props) return self.fail(t, "expected a node");
+	self.state = self.states.pop()!!;
+	e.type = SCALAR;
+	return e;
 }
 
 fn Event? Parser.block_sequence_entry(&self)

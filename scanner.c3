@@ -3,16 +3,20 @@ module yaml::parser;
 import std::io, std::collections::list;
 
 faultdef INVALID_INDENTATION, MISSING_COLON, INVALID_TAB, INVALID_ESCAPE, UNCLOSED_QUOTE,
-	INVALID_BLOCK_HEADER, UNCLOSED_FLOW;
+	INVALID_BLOCK_HEADER, UNCLOSED_FLOW, INVALID_DIRECTIVE, UNDEFINED_TAG_HANDLE;
 
 enum TokenType : char
 {
 	T_STREAM_START, T_STREAM_END, T_DOCUMENT_START, T_DOCUMENT_END,
 	T_BLOCK_SEQUENCE_START, T_BLOCK_MAPPING_START, T_BLOCK_END,
 	T_FLOW_SEQUENCE_START, T_FLOW_SEQUENCE_END, T_FLOW_MAPPING_START, T_FLOW_MAPPING_END,
-	T_BLOCK_ENTRY, T_FLOW_ENTRY, T_KEY, T_VALUE, T_SCALAR
+	T_BLOCK_ENTRY, T_FLOW_ENTRY, T_KEY, T_VALUE, T_SCALAR,
+	T_ANCHOR, T_ALIAS, T_TAG, T_VERSION_DIRECTIVE, T_TAG_DIRECTIVE
 }
-struct Token { TokenType type; Mark start; String value; ScalarStyle style; }
+
+// value: scalar text, anchor/alias name, tag suffix, YAML version or TAG prefix.
+// handle: tag handle ("" for a verbatim tag) or TAG directive handle.
+struct Token { TokenType type; Mark start; String value; String handle; ScalarStyle style; }
 
 // A possible implicit key: the token that may become a KEY when a ':' follows on the same line.
 struct SimpleKey
@@ -208,8 +212,10 @@ fn void? Scanner.fetch_next_token(&self)
 		return self.fetch_block_scalar(c == '|');
 	}
 	if (c == '#') return self.error(self.mark, "a comment needs a blank before '#'")~;
-	// M5: properties and directives
-	if (INDICATORS.contains_char(c)) return self.error(self.mark, "character not supported yet")~;
+	if (c == '%' && self.mark.column == 1 && !flow) return self.fetch_directive();
+	if (c == '&' || c == '*') return self.fetch_anchor(c == '*');
+	if (c == '!') return self.fetch_tag();
+	if (INDICATORS.contains_char(c)) return self.error(self.mark, "a plain scalar cannot start with this character")~;
 	return self.fetch_plain();
 }
 
@@ -436,7 +442,7 @@ fn void? Scanner.fetch_flow_entry(&self)
 	self.push(T_FLOW_ENTRY, m);
 }
 
-const String INDICATORS = "&*!%@`";
+const String INDICATORS = "%@`";   // '%' outside column 1, reserved '@' and '`'
 
 fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 {
@@ -447,7 +453,20 @@ fn void? Scanner.fetch_document_indicator(&self, TokenType type)
 	self.compact_ok = false;   // "--- a: b" (9KBC) and "--- - a" may not open a block collection
 	Mark m = self.mark;
 	for (int i = 0; i < 3; i++) self.advance();
+	if (type == T_DOCUMENT_END) self.end_of_line()!;   // "... text" (3HFZ)
 	self.push(type, m);
+}
+
+// Only blanks and a comment may follow on this line.
+fn void? Scanner.end_of_line(&self)
+{
+	sz blanks = self.mark.pos;
+	while (self.peek() == ' ' || self.peek() == '\t') self.advance();
+	if (self.peek() == '#' && self.mark.pos > blanks)
+	{
+		while (!self.at_end() && self.peek() != '\n') self.advance();
+	}
+	if (!self.at_end() && self.peek() != '\n') return self.error(self.mark, "unexpected text at the end of the line")~;
 }
 
 // '---' or '...' at column 1 followed by a blank or EOF
@@ -799,5 +818,139 @@ fn int? Scanner.block_breaks(&self, int indent, int min_indent, int* max_empty)
 		if (indent < 0 && self.col() > *max_empty) *max_empty = self.col();
 		self.advance();
 		breaks++;
+	}
+}
+
+// ---- node properties and directives ----------------------------------------
+
+fn void Scanner.skip_blanks(&self)
+{
+	while (self.peek() == ' ' || self.peek() == '\t') self.advance();
+}
+
+// Characters up to a blank or a flow indicator (anchor names, directive arguments).
+fn String Scanner.scan_word(&self)
+{
+	sz from = self.mark.pos;
+	while (!is_blankz(self.peek()) && !is_flow_indicator(self.peek())) self.advance();
+	return self.s[from:self.mark.pos - from];
+}
+
+// '&name' or '*name'.
+fn void? Scanner.fetch_anchor(&self, bool is_alias)
+{
+	self.save_simple_key()!;
+	self.simple_key_allowed = false;
+	Mark m = self.mark;
+	self.advance();
+	String name = self.scan_word();
+	if (!name.len) return self.error(m, is_alias ? "alias without a name" : "anchor without a name")~;
+	self.tokens.push({ .type = is_alias ? T_ALIAS : T_ANCHOR, .start = m, .value = name });
+}
+
+fn bool is_word_char(char c) => c.is_alnum() || c == '-';
+
+// URI characters allowed in a tag suffix (no '!' and no flow indicators); '%XX' is decoded.
+fn String? Scanner.scan_tag_uri(&self, bool verbatim)
+{
+	DString buf = dstring::temp();
+	while (true)
+	{
+		char c = self.peek();
+		if (c == '%')
+		{
+			char? b = hex_byte(self.peek(1), self.peek(2));
+			if (catch b) return self.error(self.mark, "invalid '%' escape in a tag", INVALID_ESCAPE)~;
+			buf.append_char(b);
+			for (int i = 0; i < 3; i++) self.advance();
+			continue;
+		}
+		if (!c.is_alnum() && !"-#;/?:@&=+$_.~*'()".contains_char(c) && !(verbatim && "!,[]".contains_char(c))) break;
+		buf.append_char(c);
+		self.advance();
+	}
+	return buf.str_view();
+}
+
+fn char? hex_byte(char hi, char lo)
+{
+	if (!hi.is_xdigit() || !lo.is_xdigit()) return INVALID_ESCAPE~;
+	return (char)((hi.is_digit() ? hi - '0' : (hi | 0x20) - 'a' + 10) * 16 + (lo.is_digit() ? lo - '0' : (lo | 0x20) - 'a' + 10));
+}
+
+// '!<uri>', '!', '!suffix', '!!suffix', '!handle!suffix'. Resolved by the parser.
+fn void? Scanner.fetch_tag(&self)
+{
+	self.save_simple_key()!;
+	self.simple_key_allowed = false;
+	Mark m = self.mark;
+	String handle;
+	String suffix;
+	if (self.peek(1) == '<')
+	{
+		self.advance();
+		self.advance();
+		suffix = self.scan_tag_uri(true)!;
+		if (self.peek() != '>' || !suffix.len) return self.error(m, "invalid verbatim tag")~;
+		self.advance();
+	}
+	else
+	{
+		sz n = 1;
+		while (is_word_char(self.peek(n))) n++;
+		if (self.peek(n) == '!')
+		{
+			handle = self.s[self.mark.pos:n + 1];   // "!!" or "!name!"
+			for (sz i = 0; i <= n; i++) self.advance();
+		}
+		else
+		{
+			handle = "!";
+			self.advance();
+		}
+		suffix = self.scan_tag_uri(false)!;
+		if (handle.len > 1 && !suffix.len) return self.error(m, "tag without a suffix")~;
+	}
+	char c = self.peek();
+	if (!is_blankz(c) && !(self.flow_level && is_flow_indicator(c))) return self.error(self.mark, "a tag must be followed by a blank")~;
+	self.tokens.push({ .type = T_TAG, .start = m, .handle = handle, .value = suffix });
+}
+
+// '%YAML 1.2', '%TAG !h! prefix'; other directives are ignored.
+fn void? Scanner.fetch_directive(&self)
+{
+	self.unroll_indent(-1);
+	self.remove_simple_key()!;
+	self.simple_key_allowed = false;
+	Mark m = self.mark;
+	self.advance();
+	String name = self.scan_word();
+	self.skip_blanks();
+	switch (name)
+	{
+		case "YAML":
+			sz from = self.mark.pos;
+			while (self.peek().is_digit()) self.advance();
+			if (self.peek() != '.' || self.mark.pos == from) return self.error(self.mark, "invalid %YAML version", INVALID_DIRECTIVE)~;
+			self.advance();
+			if (!self.peek().is_digit()) return self.error(self.mark, "invalid %YAML version", INVALID_DIRECTIVE)~;
+			while (self.peek().is_digit()) self.advance();
+			String version = self.s[from:self.mark.pos - from];
+			self.end_of_line()!;
+			self.tokens.push({ .type = T_VERSION_DIRECTIVE, .start = m, .value = version });
+		case "TAG":
+			String handle = self.scan_word();
+			bool ok = handle == "!" || (handle.len >= 2 && handle[0] == '!' && handle[^1] == '!');
+			if (handle.len > 2) foreach (c : handle[1:handle.len - 2]) ok &= is_word_char(c);
+			if (!ok) return self.error(m, "invalid %TAG handle", INVALID_DIRECTIVE)~;
+			self.skip_blanks();
+			sz from = self.mark.pos;
+			while (!is_blankz(self.peek())) self.advance();
+			String prefix = self.s[from:self.mark.pos - from];
+			if (!prefix.len) return self.error(self.mark, "%TAG without a prefix", INVALID_DIRECTIVE)~;
+			self.end_of_line()!;
+			self.tokens.push({ .type = T_TAG_DIRECTIVE, .start = m, .handle = handle, .value = prefix });
+		default:
+			while (!self.at_end() && self.peek() != '\n') self.advance();   // reserved directive
 	}
 }
