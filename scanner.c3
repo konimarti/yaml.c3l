@@ -61,7 +61,7 @@ struct Scanner
 
 fn void Scanner.init(&self, String s, bool verbose = true)
 {
-	if (s.starts_with("\xef\xbb\xbf")) s = s[3..];   // a byte order mark is not content
+	if (s.starts_with(BOM)) s = s[BOM.len..];   // a byte order mark is not content
 	*self = { .s = normalize_breaks(s), .mark = { 0, 1, 1 }, .verbose = verbose, .indent = -1 };
 	self.invalid_at = first_invalid(self.s);
 	self.tokens.tinit();
@@ -314,6 +314,10 @@ fn void? Scanner.fetch_next_token(&self)
 }
 
 // Skip blanks, comments and line breaks. Sets simple_key_allowed / compact_ok at a new line.
+const String BOM = "\xef\xbb\xbf";   // U+FEFF, the UTF-8 byte order mark
+
+fn bool Scanner.bom_at(&self, sz i) @inline => self.s[i..].starts_with(BOM);
+
 fn void Scanner.scan_to_next_token(&self)
 {
 	while (!self.at_end())
@@ -339,6 +343,12 @@ fn void Scanner.scan_to_next_token(&self)
 			self.simple_key_allowed = true;
 			self.compact_ok = true;
 			self.tab_indent = false;
+		}
+		else if (self.mark.column == 1 && !self.flow_level && self.bom_at(self.mark.pos))
+		{
+			// a BOM may start each document (YAML 1.2.2 5.2); it takes no column
+			for (int i = 0; i < BOM.len; i++) self.advance();
+			self.mark.column = 1;
 		}
 		else
 		{
@@ -547,9 +557,11 @@ fn void? Scanner.end_of_line(&self, String msg = "unexpected text at the end of 
 // '---' or '...' at column 1 followed by a blank or EOF
 fn bool Scanner.at_marker(&self) => self.mark.column == 1 && self.is_marker(self.mark.pos);
 
-// '---' or '...' starting at byte `i` (which must be at a line start) followed by a blank or EOF
+// '---' or '...' starting at byte `i` (which must be at a line start, maybe after a BOM)
+// followed by a blank or EOF
 fn bool Scanner.is_marker(&self, sz i)
 {
+	if (self.bom_at(i)) i += BOM.len;
 	if (i + 3 > self.s.len) return false;
 	char c = self.s[i];
 	return (c == '-' || c == '.') && self.s[i + 1] == c && self.s[i + 2] == c

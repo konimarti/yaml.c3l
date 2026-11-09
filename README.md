@@ -21,9 +21,10 @@ Requires [c3c](https://github.com/c3lang/c3c) v0.8.6 or newer.
 YAML can be parsed from a `String`, an `InStream` (e.g. `File`), or directly from a file
 path.
 
-The input must be UTF-8 (a leading byte order mark is skipped) and contain only printable
-characters (YAML 1.2.2 §5.1). Anything else, such as a NUL byte, fails with
-`parser::INVALID_CHARACTER`.
+The input must be UTF-8 and contain only printable characters (YAML 1.2.2 §5.1). A byte
+order mark is skipped at the start of the stream and at the start of a line outside a flow
+collection or scalar (YAML allows one before each document). Anything else, such as a NUL
+byte, fails with `parser::INVALID_CHARACTER`.
 
 Read data from `String s`:
 ```

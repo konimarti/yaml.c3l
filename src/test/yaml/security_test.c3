@@ -231,3 +231,15 @@ fn void excerpt_has_no_control_characters() @test => @pool()
 	test::eq(api_test::stderr_of("é: \xc2\x9b\xff q\n", true),
 		"YAML ERROR -- Line 1, Col 5: invalid UTF-8 or a non-printable character\né: ?? q\n   ^\n");
 }
+
+// N4: a byte order mark may start any document, not only the stream (before: the BOM
+// swallowed the '---' of the second document, which became the scalar "\ufeff--- b")
+fn void bom_before_a_document() @test => @pool()
+{
+	test::eq(test_util::events("a\n...\n\xef\xbb\xbf--- b\n", " ", false)!!, "+DOC =VAL :a -DOC ... +DOC --- =VAL :b -DOC");
+	test::eq(test_util::events("a\n\xef\xbb\xbf--- b\n", " ", false)!!, "+DOC =VAL :a -DOC +DOC --- =VAL :b -DOC");
+	test::eq(test_util::events("...\n\xef\xbb\xbfk: v\n", " ", false, false)!!, "+MAP =VAL :k =VAL :v -MAP");
+	// inside a document it is content
+	test::eq(test_util::events("k:\n  \xef\xbb\xbfv\n", " ", false, false)!!, "+MAP =VAL :k =VAL :\ufeffv -MAP");
+	test::@error(test_util::events(`"a`), parser::UNCLOSED_QUOTE);
+}
