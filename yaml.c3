@@ -135,6 +135,24 @@ fn Yaml? from_file(String filename, Allocator allocator = mem, bool verbose = tr
 	return from_stream(&f, allocator, verbose)!;
 }
 
+// Parses a String, a char[], a DString or an InStream (a File, a ByteReader, ...) by its type.
+macro Yaml? parse(input, Allocator allocator = mem, bool verbose = true)
+{
+	$switch $Typeof(input):
+		$case DString:
+			return from_string(input.str_view(), allocator, verbose);
+		$case String:
+			return from_string(input, allocator, verbose);
+		$case char[]:
+			return from_string((String)input, allocator, verbose);
+		$default:
+			return from_stream(input, allocator, verbose);   // anything else must be an InStream
+	$endswitch
+}
+
+// Like parse, with tmem: the result lives until the end of the enclosing @pool().
+macro Yaml? tparse(input, bool verbose = true) => parse(input, tmem, verbose);
+
 // "a.b.0": map keys and array indexes separated by '.'; document 0. An empty segment or an
 // index with a leading zero is NOT_FOUND; keys that are empty or contain '.' are not reachable.
 fn Object*? Yaml.get(&self, String path) @operator([]) => self.get_in(0, path);

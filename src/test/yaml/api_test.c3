@@ -166,3 +166,33 @@ fn void index_segments() @test => @pool()
 	test::eq(data.get("a.1")!!.s, "y");
 	foreach (path : (String[]){ "a.0x1", "a.+1", "a. 1", "a.", "a.-1", "a.3" }) test::@error(data.get(path), NOT_FOUND);
 }
+
+fn void parse_by_input_type() @test => @pool()
+{
+	Yaml a = yaml::parse("a: 1\n", mem, false)!!;
+	defer a.free();
+	test::eq(a.get("a")!!.i, 1);
+	char[] bytes = "a: 2\n";
+	Yaml b = yaml::parse(bytes, mem, false)!!;
+	defer b.free();
+	test::eq(b.get("a")!!.i, 2);
+	DString ds = dstring::temp();
+	ds.append("a: 3\n");
+	Yaml c = yaml::parse(ds, mem, false)!!;
+	defer c.free();
+	test::eq(c.get("a")!!.i, 3);
+	ByteReader reader;
+	reader.init("a: 4\n");
+	Yaml d = yaml::parse(&reader, mem, false)!!;
+	defer d.free();
+	test::eq(d.get("a")!!.i, 4);
+	test::@error(yaml::parse("a: [1\n", mem, false), parser::UNCLOSED_FLOW);
+}
+
+fn void tparse_uses_tmem() @test => @pool()
+{
+	// no free: the temp allocator releases it (the test runner reports leaks of other allocators)
+	Yaml a = yaml::tparse("k: v\n", false)!!;
+	test::eq(a.get("k")!!.s, "v");
+	test::@error(yaml::tparse("k: [", false), parser::UNCLOSED_FLOW);
+}
