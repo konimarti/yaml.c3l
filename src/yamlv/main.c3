@@ -1,6 +1,6 @@
 module yamlv;
 
-import std::io;
+import std::io, std::os;
 import yaml;
 import yaml::parser;
 
@@ -22,6 +22,10 @@ fn int main(String[] args)
 			default: io::eprintfn("unknown option: %s", arg); return 1;
 		}
 	}
+	$if env::WIN32:
+		os::win32::_setmode(0, 0x8000);   // _O_BINARY: no CRLF translation, no end of input at ^Z
+		os::win32::_setmode(1, 0x8000);
+	$endif
 	@pool()
 	{
 		ByteWriter writer;
