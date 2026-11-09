@@ -32,6 +32,24 @@ struct NodeData
 	uint props;         // 0, or index into Tree.props
 }
 
+struct MapIndexSlot
+{
+	uint node_id;
+	ulong hash;
+}
+
+struct MapIndex
+{
+	MapIndexSlot* slots;
+	uint cap;
+}
+
+struct MapIndexEntry
+{
+	uint map_id;
+	MapIndex* index;
+}
+
 // Anchors and tags, for the nodes that have them. 56 bytes.
 struct Props
 {
@@ -74,6 +92,8 @@ struct Tree
 	ulong hops;         // sibling links followed by navigation: lets tests prove O(n) iteration
 	uint last_doc_idx;  // cached index of last accessed stream document
 	uint last_doc_id;   // cached node id of last accessed stream document
+	MapIndexEntry* map_indices;
+	uint map_indices_len, map_indices_cap;
 }
 
 // A new tree with only the stream root. `input` (may be empty) is the text plain spans refer to;
@@ -94,6 +114,15 @@ fn void Tree.free(&self)
 	if (self.nodes) alloc::free(a, self.nodes);
 	if (self.props) alloc::free(a, self.props);
 	if (self.weights) alloc::free(a, self.weights);
+	if (self.map_indices)
+	{
+		for (uint i = 0; i < self.map_indices_len; i++)
+		{
+			alloc::free(a, self.map_indices[i].index.slots);
+			alloc::free(a, self.map_indices[i].index);
+		}
+		alloc::free(a, self.map_indices);
+	}
 	if (self.owns_input && self.input.len) alloc::free(a, self.input.ptr);
 	self.arena.free();
 	alloc::free(a, self);

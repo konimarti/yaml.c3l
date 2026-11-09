@@ -95,6 +95,30 @@ fn void hop_test_docs() @test => @pool()
 	assert(y.tree.hops <= 300_000, "hops <= 3*n for docs() cursor");
 }
 
+fn void large_map_lookup_index() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("map:\n");
+	for (int i = 0; i < 200; i++)
+	{
+		s.appendf("  k_%d: v_%d\n", i, i);
+	}
+	s.append("  k_10: shadowed\n");
+	yaml2::Yaml y = yaml2::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+
+	for (int i = 0; i < 200; i++)
+	{
+		if (i == 10) continue;
+		String path = string::tformat("map.k_%d", i);
+		Node n = y.get(path)!!;
+		test::eq(n.as_string()!!, string::tformat("v_%d", i));
+	}
+	Node n10 = y.get("map.k_10")!!;
+	test::eq(n10.as_string()!!, "shadowed");
+	test::@error(y.get("map.non_existent"), NOT_FOUND);
+}
+
 fn void default_coalescing_operator() @test
 {
 	yaml2::Yaml y = testing::sample();

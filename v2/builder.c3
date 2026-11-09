@@ -36,7 +36,7 @@ fn ulong sat_add_sz(ulong a, ulong b) @inline @private
 	return a + b;
 }
 
-fn ulong hash_string(String s, ulong seed) @private
+fn ulong hash_string(String s, ulong seed)
 {
 	ulong h = seed ^ 14695981039346656037UL;
 	foreach (c : s)
