@@ -122,6 +122,9 @@ c3c build yamlv
   characters first, so such an error prints no events.
 * `build/yamlv -j < file.yaml`: prints every document as one line of JSON.
 
+On Windows use `cmd` or Git Bash: PowerShell has no `<` and re-encodes piped text. `yamlv` reads
+stdin and writes stdout in binary mode, so the output has `\n` line ends.
+
 ```sh
 $ printf 'a: &x [1, 2.5]\nb: *x\nc: !!str 3\n' | build/yamlv -e
 +STR
