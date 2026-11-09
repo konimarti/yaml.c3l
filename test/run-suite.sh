@@ -22,9 +22,9 @@ fi
 vp=0; vf=0; ep=0; ef=0; failed=()
 while read -r dir; do
 	id=${dir#test-suite/}
-	out=$(timeout 10 "$bin" -e < "$dir/in.yaml" 2>/dev/null); rc=$?
+	out=$(timeout 10 "$bin" -e < "$dir/in.yaml" 2>/dev/null); rc=$?   # 1: a parse error; a crash or timeout is not
 	if [ -f "$dir/error" ]; then
-		if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then ep=$((ep+1)); else ef=$((ef+1)); failed+=("error $id"); fi
+		if [ $rc -eq 1 ]; then ep=$((ep+1)); else ef=$((ef+1)); failed+=("error $id"); fi
 	elif [ $rc -eq 0 ] && [ "$out" == "$(< "$dir/test.event")" ]; then
 		vp=$((vp+1))
 	else
