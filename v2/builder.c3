@@ -332,7 +332,12 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 			String v = self.parser.text(e.value);
 			String pfx = self.parser.text(e.tag_prefix);
 			String sfx = self.parser.text(e.tag);
-			Schema schema = resolve_scalar(v, e.style, pfx, sfx)!;
+			Schema? schema_res = resolve_scalar(v, e.style, pfx, sfx);
+			if (catch schema_res)
+			{
+				return self.parser.error(e.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
+			}
+			Schema schema = schema_res;
 
 			uint id = self.tree.new_node(SCALAR, style: e.style, schema: schema, flags: flags, key: key_span, val: e.value);
 			if (e.anchor.len || e.tag.len || e.tag_prefix.len)
@@ -355,7 +360,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 
 		case ALIAS:
 			uint? target = self.anchors.get(self.parser.text(e.anchor));
-			if (catch target) return UNDEFINED_ALIAS~;
+			if (catch target) return self.parser.error(e.start, "undefined alias", UNDEFINED_ALIAS)~;
 
 			uint tid = target;
 			NodeData* td = &self.tree.nodes[tid];
@@ -460,7 +465,12 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					String ktext = self.parser.text(key_ev.value);
 					String kpfx = self.parser.text(key_ev.tag_prefix);
 					String ksfx = self.parser.text(key_ev.tag);
-					Schema kschema = resolve_scalar(ktext, key_ev.style, kpfx, ksfx)!;
+					Schema? kschema_res = resolve_scalar(ktext, key_ev.style, kpfx, ksfx);
+					if (catch kschema_res)
+					{
+						return self.parser.error(key_ev.start, "the value does not match its tag", INVALID_INPUT_FORMAT)~;
+					}
+					Schema kschema = kschema_res;
 					Span kspan = (kschema == Schema.NULL) ? (Span){} : key_ev.value;
 					String cmp_key = (kschema == Schema.NULL) ? "" : ktext;
 
@@ -499,7 +509,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 				else if (key_ev.type == ALIAS)
 				{
 					uint? target = self.anchors.get(self.parser.text(key_ev.anchor));
-					if (catch target) return UNDEFINED_ALIAS~;
+					if (catch target) return self.parser.error(key_ev.start, "undefined alias", UNDEFINED_ALIAS)~;
 					uint tid = target;
 					NodeData* td = &self.tree.nodes[tid];
 

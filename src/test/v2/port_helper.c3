@@ -1,0 +1,78 @@
+// Shared helpers for ported v2 tests.
+module yaml2::port_test_util;
+
+import std::io, libc;
+import yaml2, yaml2::parser, yaml2::testing;
+
+fn String stderr_of(String yaml, bool verbose, fault* f = null)
+{
+	CFile tmp = libc::tmpfile();
+	assert(tmp, "tmpfile() failed");
+	defer libc::fclose(tmp);
+	File saved = *io::stderr();
+	*io::stderr() = file::from_handle(tmp);
+	Yaml? data = yaml2::from_string(yaml, mem, verbose);
+	*io::stderr() = saved;
+	if (catch err = data)
+	{
+		if (f) *f = err;
+	}
+	else
+	{
+		data.free();
+	}
+	sz len = libc::ftell(tmp);
+	char[] buf = mem::talloc_array(char, len);
+	libc::rewind(tmp);
+	libc::fread(buf.ptr, 1, (usz)len, tmp);
+	return (String)buf;
+}
+
+fn String? events(String yaml, String sep = "\n", bool stream = true, bool docs = true)
+{
+	DString out = dstring::temp();
+	Parser p;
+	p.init_inplace(testing::writable(yaml), false, mem);
+	defer p.free();
+	while (true)
+	{
+		Event e = p.next()!;
+		bool skip = (!stream && (e.type == STREAM_START || e.type == STREAM_END))
+			|| (!docs && (e.type == DOCUMENT_START || e.type == DOCUMENT_END));
+		if (!skip)
+		{
+			if (out.len()) out.append(sep);
+			out.appendf("%s", p.view(e));
+		}
+		if (e.type == STREAM_END) return out.str_view();
+	}
+}
+
+fn String? scalar(String yaml)
+{
+	Parser p;
+	p.init_inplace(testing::writable(yaml), false, mem);
+	defer p.free();
+	while (true)
+	{
+		Event e = p.next()!;
+		if (e.type == SCALAR) return p.text(e.value);
+		if (e.type == STREAM_END) return NOT_FOUND~;
+	}
+}
+
+fn void? discard_char(void* data, char c) @private => (void)0;
+
+fn void? check_json_limit(Yaml* y)
+{
+	Formatter f;
+	f.init(&discard_char, null);
+	(void)yaml2::write_yaml_json(&f, y)!;
+}
+
+fn String? json(String yaml)
+{
+	Yaml data = yaml2::from_string(yaml, mem, false)!;
+	defer data.free();
+	return string::tformat("%s", data);
+}
