@@ -99,12 +99,12 @@ The limits for untrusted input are constants in `yaml::parser`. Exceeding one fa
 * `parser::MAX_DEPTH` (512): nesting depth. The event parser (`Parser.next`, `yamlv -e`)
   checks flow collections; building a document checks the whole tree, including the parts
   that come from aliases.
-* `parser::MAX_ALIAS_NODES` (1,000,000): nodes created by alias expansion in a single
-  document.
-* `parser::MAX_ALIAS_BYTES` (64 MiB): string and key bytes copied by alias expansion in a
-  single document.
-* `parser::MAX_KEY_TEXT` (4 MiB): the JSON text of all collection keys (`[a, b]: c`) in a
-  single document.
+
+The other limits are budgets for one `yaml::from_*` call, shared by all documents of the
+stream (the result keeps every document):
+* `parser::MAX_ALIAS_NODES` (1,000,000): nodes created by alias expansion.
+* `parser::MAX_ALIAS_BYTES` (64 MiB): string and key bytes copied by alias expansion.
+* `parser::MAX_KEY_TEXT` (4 MiB): the JSON text of all collection keys (`[a, b]: c`).
 
 ### Command-line tool
 

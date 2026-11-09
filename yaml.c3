@@ -102,6 +102,7 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 {
 	Parser parser;
 	parser.init(s, verbose);
+	Budget budget;   // one for all documents
 	YamlData data = { .allocator = allocator };
 	data.docs.init(allocator);
 	defer catch data.free();
@@ -114,7 +115,7 @@ fn YamlData? from_string(String s, Allocator allocator = mem, bool verbose = tru
 			case SCALAR:
 			case SEQUENCE_START:
 			case MAPPING_START:
-			case ALIAS: data.docs.push(build_document(&parser, ev, allocator)!);
+			case ALIAS: data.docs.push(build_document(&parser, ev, allocator, &budget)!);
 			default: break;
 		}
 	}

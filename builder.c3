@@ -9,22 +9,29 @@ const String TAG_BOOL = "tag:yaml.org,2002:bool";
 const String TAG_INT = "tag:yaml.org,2002:int";
 const String TAG_FLOAT = "tag:yaml.org,2002:float";
 
+// What alias expansion and collection keys have cost in one from_* call, over all its
+// documents: YamlData keeps every document, so the limits apply to the whole stream.
+struct Budget
+{
+	sz alias_nodes;   // nodes created by alias expansion (MAX_ALIAS_NODES)
+	sz alias_bytes;   // string and key bytes copied by alias expansion (MAX_ALIAS_BYTES)
+	sz key_text;      // bytes of JSON text made for collection keys (MAX_KEY_TEXT)
+}
+
 // Events -> Object for one document.
 struct Builder
 {
 	Parser* parser;
 	Allocator allocator;
-	sz alias_nodes;   // nodes created by alias expansion (MAX_ALIAS_NODES)
-	sz alias_bytes;   // string and key bytes copied by alias expansion (MAX_ALIAS_BYTES)
-	sz key_text;      // bytes of JSON text made for collection keys (MAX_KEY_TEXT)
+	Budget* budget;
 	int depth;        // nesting depth of the current node (MAX_DEPTH)
 	HashMap {String, Object*} anchors;   // the anchored nodes (owned by the tree or by `dropped`)
 	List {Object*} dropped;              // nodes taken out of the tree: replaced values and key nodes
 }
 
-fn Object*? build_document(Parser* parser, Event root, Allocator allocator)
+fn Object*? build_document(Parser* parser, Event root, Allocator allocator, Budget* budget)
 {
-	Builder b = { .parser = parser, .allocator = allocator };
+	Builder b = { .parser = parser, .allocator = allocator, .budget = budget };
 	b.anchors.tinit();
 	b.dropped.tinit();
 	defer foreach (o : b.dropped) o.free();   // anchors may point into them until the end
@@ -91,8 +98,8 @@ fn String? Builder.key(&self, Event e)
 	if (key_node.is_string()) return key_node.s;
 	// a nested collection key is escaped again at every level: the text can double per level
 	String text = string::tformat("%s", (Json){ key_node });
-	self.key_text += text.len;
-	if (self.key_text > parser::MAX_KEY_TEXT) return self.parser.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+	self.budget.key_text += text.len;
+	if (self.budget.key_text > parser::MAX_KEY_TEXT) return self.parser.error(e.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
 	return text;
 }
 
@@ -101,7 +108,7 @@ fn String? Builder.key(&self, Event e)
 // MAX_ALIAS_BYTES; `depth` is the depth of the alias.
 fn Object*? Builder.clone(&self, Object* o, int depth)
 {
-	if (++self.alias_nodes > parser::MAX_ALIAS_NODES) return parser::LIMIT_EXCEEDED~;
+	if (++self.budget.alias_nodes > parser::MAX_ALIAS_NODES) return parser::LIMIT_EXCEEDED~;
 	switch
 	{
 		case o.is_null(): return object::new_null();
@@ -109,7 +116,7 @@ fn Object*? Builder.clone(&self, Object* o, int depth)
 		case o.is_int(): return object::new_int(self.allocator, o.i);
 		case o.is_float(): return object::new_float(self.allocator, o.f);
 		case o.is_string():
-			if ((self.alias_bytes += o.s.len) > parser::MAX_ALIAS_BYTES) return parser::LIMIT_EXCEEDED~;
+			self.charge_alias_bytes(o.s.len)!;
 			return object::new_string(self.allocator, o.s);
 	}
 	if (depth + 1 > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
@@ -124,10 +131,16 @@ fn Object*? Builder.clone(&self, Object* o, int depth)
 	defer catch map.free();
 	o.@each_entry(; String key, Object* value)
 	{
-		if ((self.alias_bytes += key.len) > parser::MAX_ALIAS_BYTES) return parser::LIMIT_EXCEEDED~;
+		self.charge_alias_bytes(key.len)!;
 		map.set(key, self.clone(value, depth + 1)!);
 	};
 	return map;
+}
+
+fn void? Builder.charge_alias_bytes(&self, sz len)
+{
+	self.budget.alias_bytes += len;
+	if (self.budget.alias_bytes > parser::MAX_ALIAS_BYTES) return parser::LIMIT_EXCEEDED~;
 }
 
 // ---- core schema ---------------------------------------------------------

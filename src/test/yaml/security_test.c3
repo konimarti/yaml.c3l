@@ -168,3 +168,45 @@ fn void plain_scalar_is_not_copied() @test => @pool()
 	assert(values[0].ptr == &input[0] && values[1].ptr == &input[5] && values[2].ptr == &input[16]);
 	test::eq(values[3], "multi line");
 }
+
+// N1: the alias and key budgets cover all documents of a from_* call, because YamlData keeps
+// them all (before: 20 documents that each stayed below the limits needed 2 GB)
+fn void limits_cover_the_stream() @test => @pool()
+{
+	// 2 x 601 000 alias nodes
+	DString nodes = dstring::temp();
+	for (int doc = 0; doc < 2; doc++)
+	{
+		nodes.append("--- {a: &a [");
+		for (int i = 0; i < 1000; i++) nodes.append("0, ");
+		nodes.append("], b: [");
+		for (int i = 0; i < 600; i++) nodes.append("*a, ");
+		nodes.append("]}\n");
+	}
+	test::@error(yaml::from_string(nodes.str_view(), &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
+	// 2 x 40 MiB copied by aliases
+	DString bytes = dstring::temp();
+	for (int doc = 0; doc < 2; doc++)
+	{
+		bytes.append("--- {a: &a ");
+		bytes.append_repeat('x', 1024 * 1024);
+		bytes.append(", b: [");
+		for (int i = 0; i < 40; i++) bytes.append("*a, ");
+		bytes.append("]}\n");
+	}
+	test::@error(yaml::from_string(bytes.str_view(), &allocators::LIBC_ALLOCATOR, false), parser::LIMIT_EXCEEDED);
+	// 8 x about 1.8 MB of collection key text
+	DString keys = dstring::temp();
+	for (int doc = 0; doc < 8; doc++)
+	{
+		keys.append("--- ");
+		keys.append_repeat('{', 19);
+		keys.append("a");
+		keys.append_repeat('}', 19);
+		keys.append("\n");
+	}
+	test::@error(yaml::from_string(keys.str_view(), mem, false), parser::LIMIT_EXCEEDED);
+	// one such document is fine
+	YamlData data = yaml::from_string(keys.str_view()[:keys.str_view().index_of("\n")!! + 1], mem, false)!!;
+	data.free();
+}
