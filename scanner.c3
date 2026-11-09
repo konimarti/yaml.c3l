@@ -160,10 +160,36 @@ fn fault Scanner.error(&self, Mark m, String msg, fault f = SYNTAX_ERROR)
 		while (end < self.s.len && end - m.pos < EXCERPT && self.s[end] != '\n') end++;
 		while (end > m.pos && end < self.s.len && conv::is_cont(self.s[end])) end--;
 		(void)io::eprintfn("YAML ERROR -- Line %d, Col %d: %s", m.line, m.column, msg);
-		(void)io::eprintn(self.s[start:end - start]);
-		(void)io::eprintfn("%*s^", (int)conv::utf8_codepoints(self.s[start:m.pos - start]), "");
+		int caret;
+		(void)io::eprintn(printable_excerpt(self.s[start:end - start], m.pos - start, &caret));
+		(void)io::eprintfn("%*s^", caret, "");
 	}
 	return f;
+}
+
+// `line` with every control character and invalid UTF-8 byte as '?', so a rejected input
+// cannot send escape sequences to the terminal; `*caret` gets the character column of `at`.
+fn String printable_excerpt(String line, sz at, int* caret)
+{
+	DString out = dstring::temp();
+	for (sz i = 0; i < line.len;)
+	{
+		if (i <= at) *caret = (int)conv::utf8_codepoints(out.str_view());
+		sz size = line.len - i;
+		Char32? c = conv::utf8_to_char32(&line[i], &size);
+		if (catch c) size = 1;
+		if (try c && is_printable(c) && c != '\n')
+		{
+			out.append(line[i:size]);
+		}
+		else
+		{
+			out.append_char('?');
+		}
+		i += size;
+	}
+	if (at >= line.len) *caret = (int)conv::utf8_codepoints(out.str_view());
+	return out.str_view();
 }
 
 // ---- token queue ---------------------------------------------------------

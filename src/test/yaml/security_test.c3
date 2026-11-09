@@ -221,3 +221,13 @@ fn void many_valid_collection_keys() @test => @pool()
 	defer data.free();
 	test::eq(data.get("")!!.map.len(), 60_000);
 }
+
+// N3: the excerpt shows control characters and invalid UTF-8 as '?', so a rejected input
+// cannot send escape sequences to the terminal (before: ESC and BEL were echoed)
+fn void excerpt_has_no_control_characters() @test => @pool()
+{
+	test::eq(api_test::stderr_of("a: \"\e]0;x\a\e[2J\"\n", true),
+		"YAML ERROR -- Line 1, Col 5: control characters are not allowed\na: \"?]0;x??[2J\"\n    ^\n");
+	test::eq(api_test::stderr_of("é: \xc2\x9b\xff q\n", true),
+		"YAML ERROR -- Line 1, Col 5: invalid UTF-8 or a non-printable character\né: ?? q\n   ^\n");
+}
