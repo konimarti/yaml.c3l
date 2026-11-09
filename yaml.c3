@@ -135,7 +135,8 @@ fn YamlData? from_file(String filename, Allocator allocator = mem, bool verbose 
 	return from_stream(&f, allocator, verbose)!;
 }
 
-// "a.b.0": map keys and array indexes separated by '.'; document 0.
+// "a.b.0": map keys and array indexes separated by '.'; document 0. An empty segment or an
+// index with a leading zero is NOT_FOUND; keys that are empty or contain '.' are not reachable.
 fn Object*? YamlData.get(&self, String path) @operator([]) => self.get_in(0, path);
 
 fn Object*? YamlData.get_in(&self, sz doc, String path)
@@ -145,10 +146,12 @@ fn Object*? YamlData.get_in(&self, sz doc, String path)
 	if (!path.len) return o;
 	foreach (segment : path.tsplit("."))
 	{
+		if (!segment.len) return NOT_FOUND~;   // "a.", "a..b", ".a"
 		if (o.is_array())
 		{
 			sz i = 0;
-			if (!digits(segment, &i) || i != segment.len) return NOT_FOUND~;   // only plain digits
+			// only plain digits, no leading zero
+			if (!digits(segment, &i) || i != segment.len || (segment[0] == '0' && segment.len > 1)) return NOT_FOUND~;
 			int? index = segment.to_int();
 			if (catch index) return NOT_FOUND~;
 			if (index >= o.get_len()) return NOT_FOUND~;

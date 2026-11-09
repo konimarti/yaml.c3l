@@ -55,7 +55,10 @@ database:
 ```
 `data.get("database.ports.0")` or `data["database.ports.0"]` returns the `Object*` for
 `8000`. Both read the first document. Use `data.get_in(doc, path)` for the others. A missing
-path returns the fault `NOT_FOUND`.
+path returns the fault `NOT_FOUND`, and so does a path with an empty segment (`a.`, `a..b`) or
+an index with a leading zero (`ports.01`). The empty path `""` is the whole document. Keys
+that are empty or contain a `.` cannot be reached by a path; iterate over the `Object*`
+instead.
 
 Untagged plain scalars are resolved with the core schema:
 * `~`, `null`, `Null`, `NULL` and the empty value give null;
