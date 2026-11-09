@@ -45,7 +45,7 @@ struct Scanner
 	bool tab_indent;           // current line has a TAB before its first token
 	List {SimpleKey} keys;     // one possible simple key per flow level, [0] = block context
 	int flow_level;            // depth of '[' / '{' nesting
-	int json_line;             // line of a just scanned quoted scalar or flow end ("{"a":b}"), or 0
+	bool json_node;            // the last token is a quoted scalar or a flow end ("{"a":b}")
 }
 
 fn void Scanner.init(&self, String s, bool verbose = true)
@@ -217,16 +217,16 @@ fn void? Scanner.fetch_next_token(&self)
 		self.push(T_STREAM_START, self.mark);
 		return;
 	}
-	int line = self.mark.line;
+	int prev_line = self.mark.line;   // where the previous token ended
 	self.scan_to_next_token();
 	self.stale_simple_keys()!;
-	// the previous token is a JSON-like key: ':' may follow directly (in a flow map, on a later line)
-	bool json_key = self.json_line && (self.json_line == self.mark.line || self.key().flow_map);
-	self.json_line = 0;
+	// after a JSON-like node, ':' may follow directly (in a flow mapping also on a later line)
+	bool json_key = self.json_node && (self.mark.line == prev_line || self.key().flow_map);
+	self.json_node = false;
 	if (self.flow_level)
 	{
 		// every line inside a flow collection is indented more than the enclosing block
-		if (self.mark.line != line && !self.at_end() && self.line_indent() <= self.indent)
+		if (self.mark.line != prev_line && !self.at_end() && self.line_indent() <= self.indent)
 		{
 			return self.error(self.mark, "flow collection line is not indented enough", INVALID_INDENTATION)~;
 		}
@@ -460,7 +460,7 @@ fn void? Scanner.fetch_flow_end(&self, TokenType type)
 	Mark m = self.mark;
 	self.advance();
 	self.simple_key_allowed = false;
-	self.json_line = self.mark.line;
+	self.json_node = true;
 	self.push(type, m);
 }
 
@@ -602,7 +602,7 @@ fn void? Scanner.fetch_flow_scalar(&self, bool single)
 	String value = self.scan_flow_scalar(single)!;
 	self.simple_key_allowed = false;
 	self.compact_ok = false;
-	self.json_line = self.mark.line;
+	self.json_node = true;
 	// only blanks, then ':', a comment or the end of the line may follow (in flow also ", ] }")
 	sz i = self.mark.pos;
 	while (i < self.s.len && self.s[i].is_blank()) i++;
