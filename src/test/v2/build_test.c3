@@ -227,3 +227,36 @@ fn void allocation_count_bounded() @test => @pool()
 	assert(total_allocs <= 20, "expected <= 20 allocations, got %d", total_allocs);
 	test::eq(y.doc(0).len(), 50_000);
 }
+
+fn void spilled_keys_duplicate_table() @test => @pool()
+{
+	// Regression test: DupTable holds Spans, not dangling Strings into spill arena.
+	// Build map with >= 9 spilled keys and > 256 bytes of spill, then re-assign some keys.
+	DString s = dstring::temp();
+	s.append("map:\n");
+	for (int i = 0; i < 20; i++)
+	{
+		s.appendf("  \"\\L\\Lkey_%d_padded_string_with_extra_payload_to_exceed_spill_threshold\": %d\n", i, i);
+	}
+	for (int i = 0; i < 5; i++)
+	{
+		s.appendf("  \"\\L\\Lkey_%d_padded_string_with_extra_payload_to_exceed_spill_threshold\": %d\n", i, i + 1000);
+	}
+
+	yaml2::Yaml y = yaml2::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+
+	yaml2::Node map = y["map"];
+	test::eq(map.len(), 20);
+
+	sz count = 0;
+	foreach (e : map.entries())
+	{
+		count++;
+		if (e.value.as_int()!! >= 1000)
+		{
+			assert(e.value.as_int()!! >= 1000 && e.value.as_int()!! < 1005, "shadowed value updated");
+		}
+	}
+	test::eq(count, 20);
+}

@@ -3,7 +3,15 @@ module yaml2;
 
 import std::math;
 import std::io;
+import std::time;
 import yaml2::parser;
+
+fn ulong splitmix64(ulong x) @inline
+{
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9UL;
+	x = (x ^ (x >> 27)) * 0x94d049bb133111ebUL;
+	return x ^ (x >> 31);
+}
 
 struct NodeResult @private
 {
@@ -11,6 +19,12 @@ struct NodeResult @private
 	uint height;
 	ulong nodes;
 	ulong bytes;
+}
+
+struct AliasInfo @private
+{
+	uint height;
+	Weight weight;
 }
 
 fn ulong sat_add(ulong a, ulong b) @inline @private => (ulong::max - a < b) ? ulong::max : a + b;
@@ -22,7 +36,7 @@ fn ulong sat_add_sz(ulong a, ulong b) @inline @private
 	return a + b;
 }
 
-fn ulong hash_string(String s, ulong seed) @private
+fn ulong hash_string(String s, ulong seed)
 {
 	ulong h = seed ^ 14695981039346656037UL;
 	foreach (c : s)
@@ -134,8 +148,9 @@ fn uint? AnchorTable.get(&self, String name)
 
 struct DupSlot @private
 {
-	String key;
+	Span key;
 	uint node_id;
+	ulong hash;
 }
 
 struct DupTable @private
@@ -182,27 +197,40 @@ fn void? DupTable.grow(&self)
 
 	self.slots = new_slots;
 	self.cap = new_cap;
-	self.count = 0;
 	self.active_count = 0;
+	ulong mask = (ulong)new_cap - 1;
 
 	for (uint i = 0; i < old_cap; i++)
 	{
 		if (old_slots[i].node_id)
 		{
-			self.insert(old_slots[i].key, old_slots[i].node_id, null)!;
+			ulong idx = old_slots[i].hash & mask;
+			while (self.slots[idx].node_id != 0)
+			{
+				idx = (idx + 1) & mask;
+			}
+			self.slots[idx] = old_slots[i];
+			if (self.active_count == self.active_cap)
+			{
+				self.active_cap = self.active_cap ? self.active_cap * 2 : 64;
+				self.active = alloc::realloc_array(self.allocator, self.active, uint, self.active_cap).ptr;
+			}
+			self.active[self.active_count++] = (uint)idx;
 		}
 	}
 	if (old_slots) alloc::free(self.allocator, old_slots);
 }
 
-fn void? DupTable.insert(&self, String key, uint node_id, uint* earlier)
+fn void? DupTable.insert(&self, Parser* parser, Span key, uint node_id, uint* earlier)
 {
 	if (self.count * 2 >= self.cap) self.grow()!;
+	String key_text = parser.text(key);
+	ulong h = hash_string(key_text, self.seed);
 	ulong mask = (ulong)self.cap - 1;
-	ulong idx = hash_string(key, self.seed) & mask;
+	ulong idx = h & mask;
 	while (self.slots[idx].node_id != 0)
 	{
-		if (self.slots[idx].key == key)
+		if (self.slots[idx].hash == h && parser.text(self.slots[idx].key) == key_text)
 		{
 			if (earlier) *earlier = self.slots[idx].node_id;
 			self.slots[idx].node_id = node_id;
@@ -210,7 +238,7 @@ fn void? DupTable.insert(&self, String key, uint node_id, uint* earlier)
 		}
 		idx = (idx + 1) & mask;
 	}
-	self.slots[idx] = { .key = key, .node_id = node_id };
+	self.slots[idx] = { .key = key, .node_id = node_id, .hash = h };
 	self.count++;
 	if (self.active_count == self.active_cap)
 	{
@@ -236,7 +264,8 @@ struct Builder
 
 fn void Builder.init(&self, Tree* tree, Parser* parser, Allocator a, bool verbose)
 {
-	ulong seed = ((ulong)(uptr)tree) ^ 0x9e3779b97f4a7c15UL;
+	ulong raw = ((ulong)(uptr)tree) ^ 0x9e3779b97f4a7c15UL ^ (ulong)(long)time::now().to_seconds();
+	ulong seed = splitmix64(raw);
 	*self = {
 		.tree = tree,
 		.parser = parser,
@@ -245,6 +274,33 @@ fn void Builder.init(&self, Tree* tree, Parser* parser, Allocator a, bool verbos
 		.seed = seed,
 	};
 	self.anchors.init(a, seed);
+}
+
+fn AliasInfo? Builder.alias_check(&self, Mark start, uint tid)
+{
+	NodeData* td = &self.tree.nodes[tid];
+	uint target_height = 0;
+	Weight target_weight = { 1, 0 };
+	if (td.props)
+	{
+		Props* tp = &self.tree.props[td.props];
+		target_height = tp.height;
+		if (tp.weight) target_weight = self.tree.weights[tp.weight];
+	}
+	if (self.depth + (int)target_height > parser::MAX_DEPTH)
+	{
+		return self.parser.error(start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
+	}
+
+	ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
+	ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
+	self.tree.budget.alias_nodes = (sz)next_nodes;
+	self.tree.budget.alias_bytes = (sz)next_bytes;
+	if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
+	{
+		return self.parser.error(start, "alias expansion exceeds a size or nesting limit", parser::LIMIT_EXCEEDED)~;
+	}
+	return (AliasInfo){ target_height, target_weight };
 }
 
 fn void Builder.free(&self)
@@ -278,10 +334,11 @@ fn DupTable* Builder.get_dup_table(&self, uint map_depth)
 	return &self.dup_tables[map_depth];
 }
 
-fn void Builder.check_duplicate_key(&self, uint map_depth, uint map_id, uint new_entry_id, String key, uint entry_count)
+fn void Builder.check_duplicate_key(&self, uint map_depth, uint map_id, uint new_entry_id, Span key_span, uint entry_count)
 {
 	if (entry_count <= 8)
 	{
+		String key = self.parser.text(key_span);
 		uint child = self.tree.nodes[map_id].first;
 		while (child != 0)
 		{
@@ -309,14 +366,13 @@ fn void Builder.check_duplicate_key(&self, uint map_depth, uint map_id, uint new
 				NodeData* nd = &self.tree.nodes[child];
 				if ((nd.flags & F_SHADOWED) == 0 && (nd.flags & F_KEY_NODE) == 0)
 				{
-					String ktext = self.parser.text(nd.key);
-					dt.insert(ktext, child, null)!!;
+					dt.insert(self.parser, nd.key, child, null)!!;
 				}
 				child = nd.next;
 			}
 		}
 		uint earlier = 0;
-		dt.insert(key, new_entry_id, &earlier)!!;
+		dt.insert(self.parser, key_span, new_entry_id, &earlier)!!;
 		if (earlier)
 		{
 			self.tree.shadow(earlier);
@@ -364,41 +420,23 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 
 			uint tid = target;
 			NodeData* td = &self.tree.nodes[tid];
-
-			uint target_height = 0;
-			Weight target_weight = { 1, 0 };
-			if (td.props)
-			{
-				Props* tp = &self.tree.props[td.props];
-				target_height = tp.height;
-				if (tp.weight) target_weight = self.tree.weights[tp.weight];
-			}
-			if (self.depth + (int)target_height > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
-
-			ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
-			ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
-			self.tree.budget.alias_nodes = (sz)next_nodes;
-			self.tree.budget.alias_bytes = (sz)next_bytes;
-			if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
-			{
-				return parser::LIMIT_EXCEEDED~;
-			}
+			AliasInfo ai = self.alias_check(e.start, tid)!;
 
 			if (td.kind == SCALAR)
 			{
 				uint id = self.tree.new_node(SCALAR, style: td.style, schema: td.schema, flags: flags | F_ALIAS, key: key_span, val: td.val);
-				return (NodeResult){ id, 0, target_weight.nodes, target_weight.bytes };
+				return (NodeResult){ id, 0, ai.weight.nodes, ai.weight.bytes };
 			}
 			else
 			{
 				uint id = self.tree.new_node(td.kind, style: td.style, schema: STR, flags: flags | F_ALIAS, key: key_span);
 				self.tree.nodes[id].first = tid;
 				self.tree.nodes[id].val.len = td.val.len;
-				return (NodeResult){ id, target_height, target_weight.nodes, target_weight.bytes };
+				return (NodeResult){ id, ai.height, ai.weight.nodes, ai.weight.bytes };
 			}
 
 		case SEQUENCE_START:
-			if (++self.depth > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
+			if (++self.depth > parser::MAX_DEPTH) return self.parser.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			uint id = self.tree.new_node(SEQ, flags: flags | (e.explicit ? F_EXPLICIT : 0), key: key_span);
 			uint child_prev = 0;
 			uint max_child_height = 0;
@@ -441,7 +479,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 			return (NodeResult){ id, seq_height, seq_nodes, seq_bytes };
 
 		case MAPPING_START:
-			if (++self.depth > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
+			if (++self.depth > parser::MAX_DEPTH) return self.parser.error(e.start, "nesting depth limit exceeded", parser::LIMIT_EXCEEDED)~;
 			uint map_depth = (uint)self.depth;
 			defer
 			{
@@ -472,7 +510,17 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					}
 					Schema kschema = kschema_res;
 					Span kspan = (kschema == Schema.NULL) ? (Span){} : key_ev.value;
-					String cmp_key = (kschema == Schema.NULL) ? "" : ktext;
+
+					if (key_ev.anchor.len)
+					{
+						uint knode = self.tree.new_node(SCALAR, style: key_ev.style, schema: kschema, flags: 0, val: key_ev.value);
+						Props* kp = self.tree.props_of(knode);
+						kp.anchor = key_ev.anchor;
+						kp.tag = key_ev.tag;
+						kp.tag_prefix = key_ev.tag_prefix;
+						kp.weight = self.tree.new_weight(1, (ulong)key_ev.value.len);
+						self.anchors.insert(self.parser.text(key_ev.anchor), knode)!;
+					}
 
 					Event val_ev = self.parser.next()!;
 					NodeResult vres = self.build_node(val_ev, id, child_prev, kspan, F_KEY)!;
@@ -485,19 +533,9 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 						p.key_tag = key_ev.tag;
 						p.key_tag_prefix = key_ev.tag_prefix;
 					}
-					if (key_ev.anchor.len)
-					{
-						uint knode = self.tree.new_node(SCALAR, style: key_ev.style, schema: kschema, flags: 0, val: key_ev.value);
-						Props* kp = self.tree.props_of(knode);
-						kp.anchor = key_ev.anchor;
-						kp.tag = key_ev.tag;
-						kp.tag_prefix = key_ev.tag_prefix;
-						kp.weight = self.tree.new_weight(1, (ulong)key_ev.value.len);
-						self.anchors.insert(self.parser.text(key_ev.anchor), knode)!;
-					}
 
 					entry_count++;
-					self.check_duplicate_key(map_depth, id, val_id, cmp_key, entry_count);
+					self.check_duplicate_key(map_depth, id, val_id, kspan, entry_count);
 
 					self.tree.append_after(id, child_prev, val_id);
 					child_prev = val_id;
@@ -512,29 +550,10 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					if (catch target) return self.parser.error(key_ev.start, "undefined alias", UNDEFINED_ALIAS)~;
 					uint tid = target;
 					NodeData* td = &self.tree.nodes[tid];
-
-					uint target_height = 0;
-					Weight target_weight = { 1, 0 };
-					if (td.props)
-					{
-						Props* tp = &self.tree.props[td.props];
-						target_height = tp.height;
-						if (tp.weight) target_weight = self.tree.weights[tp.weight];
-					}
-					if (self.depth + (int)target_height > parser::MAX_DEPTH) return parser::LIMIT_EXCEEDED~;
-
-					ulong next_nodes = sat_add_sz((ulong)self.tree.budget.alias_nodes, target_weight.nodes);
-					ulong next_bytes = sat_add_sz((ulong)self.tree.budget.alias_bytes, target_weight.bytes);
-					self.tree.budget.alias_nodes = (sz)next_nodes;
-					self.tree.budget.alias_bytes = (sz)next_bytes;
-					if ((ulong)self.tree.budget.alias_nodes > (ulong)parser::MAX_ALIAS_NODES || (ulong)self.tree.budget.alias_bytes > (ulong)parser::MAX_ALIAS_BYTES)
-					{
-						return parser::LIMIT_EXCEEDED~;
-					}
+					AliasInfo ai = self.alias_check(key_ev.start, tid)!;
 
 					if (td.kind == SCALAR)
 					{
-						String cmp_key = (td.schema == Schema.NULL) ? "" : self.parser.text(td.val);
 						Span kspan = (td.schema == Schema.NULL) ? (Span){} : td.val;
 
 						Event val_ev = self.parser.next()!;
@@ -542,7 +561,7 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 						uint val_id = vres.id;
 
 						entry_count++;
-						self.check_duplicate_key(map_depth, id, val_id, cmp_key, entry_count);
+						self.check_duplicate_key(map_depth, id, val_id, kspan, entry_count);
 
 						self.tree.append_after(id, child_prev, val_id);
 						child_prev = val_id;
@@ -553,6 +572,12 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					}
 					else
 					{
+						sz max_budget = parser::MAX_KEY_TEXT + (sz)parser::KEY_TEXT_PER_BYTE * self.parser.input().len;
+						if (catch err = measure_key_json(self.tree, tid, max_budget))
+						{
+							return self.parser.error(key_ev.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+						}
+
 						Event val_ev = self.parser.next()!;
 						Span kspan = { tid, 0 };
 						NodeResult vres = self.build_node(val_ev, id, child_prev, kspan, F_KEY | F_KEY_NODE)!;
@@ -562,10 +587,10 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 						self.tree.append_after(id, child_prev, val_id);
 						child_prev = val_id;
 
-						uint combined_height = target_height > vres.height ? target_height : vres.height;
+						uint combined_height = ai.height > vres.height ? ai.height : vres.height;
 						if (combined_height > max_child_height) max_child_height = combined_height;
-						sum_nodes = sat_add(sat_add(sum_nodes, target_weight.nodes), vres.nodes);
-						sum_bytes = sat_add(sat_add(sum_bytes, target_weight.bytes), vres.bytes);
+						sum_nodes = sat_add(sat_add(sum_nodes, ai.weight.nodes), vres.nodes);
+						sum_bytes = sat_add(sat_add(sum_bytes, ai.weight.bytes), vres.bytes);
 					}
 				}
 				else
@@ -573,6 +598,12 @@ fn NodeResult? Builder.build_node(&self, Event e, uint parent, uint prev, Span k
 					// Complex collection key (SEQUENCE_START or MAPPING_START)
 					NodeResult kres = self.build_node(key_ev, 0, 0, (Span){}, 0)!;
 					uint key_node_id = kres.id;
+
+					sz max_budget = parser::MAX_KEY_TEXT + (sz)parser::KEY_TEXT_PER_BYTE * self.parser.input().len;
+					if (catch err = measure_key_json(self.tree, key_node_id, max_budget))
+					{
+						return self.parser.error(key_ev.start, "collection keys are too long", parser::LIMIT_EXCEEDED)~;
+					}
 
 					Event val_ev = self.parser.next()!;
 					Span kspan = { key_node_id, 0 };

@@ -63,6 +63,62 @@ fn void hop_test_map() @test
 	assert(tm.hops <= 400_000, "hops <= 2*n for map entries()");
 }
 
+fn void hop_test_docs() @test => @pool()
+{
+	DString s = dstring::temp();
+	for (int i = 0; i < 100_000; i++)
+	{
+		s.append("--- a\n");
+	}
+	yaml2::Yaml y = yaml2::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+	test::eq(y.len(), 100_000);
+
+	// Test 1: sequential doc(i) access with cache
+	y.tree.hops = 0;
+	for (sz i = 0; i < y.len(); i++)
+	{
+		Node d = y.doc(i);
+		assert(d.exists(), "document exists");
+	}
+	assert(y.tree.hops <= 300_000, "hops <= 3*n for sequential doc(i)");
+
+	// Test 2: docs() cursor iteration
+	y.tree.hops = 0;
+	sz count = 0;
+	foreach (d : y.docs())
+	{
+		assert(d.exists(), "document exists");
+		count++;
+	}
+	test::eq(count, 100_000);
+	assert(y.tree.hops <= 300_000, "hops <= 3*n for docs() cursor");
+}
+
+fn void large_map_lookup_index() @test => @pool()
+{
+	DString s = dstring::temp();
+	s.append("map:\n");
+	for (int i = 0; i < 200; i++)
+	{
+		s.appendf("  k_%d: v_%d\n", i, i);
+	}
+	s.append("  k_10: shadowed\n");
+	yaml2::Yaml y = yaml2::from_string(s.str_view(), mem, false)!!;
+	defer y.free();
+
+	for (int i = 0; i < 200; i++)
+	{
+		if (i == 10) continue;
+		String path = string::tformat("map.k_%d", i);
+		Node n = y.get(path)!!;
+		test::eq(n.as_string()!!, string::tformat("v_%d", i));
+	}
+	Node n10 = y.get("map.k_10")!!;
+	test::eq(n10.as_string()!!, "shadowed");
+	test::@error(y.get("map.non_existent"), NOT_FOUND);
+}
+
 fn void default_coalescing_operator() @test
 {
 	yaml2::Yaml y = testing::sample();

@@ -99,6 +99,14 @@ fn sz run_decode(yaml::Yaml tree, Allocator a)
 	return c.servers.len;
 }
 
+// New decode{Config}
+fn sz run_decode2(yaml2::Yaml tree, Allocator a)
+{
+	Config? c = yaml2::decode{Config}(tree, a, false);
+	if (catch c) return -1;
+	return c.servers.len;
+}
+
 // Old JSON serialization
 fn sz run_json_old(yaml::Yaml tree) => @pool()
 {
@@ -119,9 +127,10 @@ fn sz run_find_old(yaml::Yaml tree)
 	sz found = 0;
 	for (int i = 0; i < 1000; i++)
 	{
-		String key = string::tformat("k_%d", i * 100);
+		String key = string::tformat("map_100k.k_%d", i * 100);
 		if (try tree.get(key)) found++;
 	}
+	assert(found == 1000, "find must locate all keys");
 	return found;
 }
 
@@ -131,32 +140,64 @@ fn sz run_find2(yaml2::Yaml tree)
 	sz found = 0;
 	for (int i = 0; i < 1000; i++)
 	{
-		String key = string::tformat("k_%d", i * 100);
+		String key = string::tformat("map_100k.k_%d", i * 100);
 		if (try tree.get(key)) found++;
 	}
+	assert(found == 1000, "find must locate all keys");
 	return found;
 }
 
-// Old foreach: iterate all top-level collection elements
-fn sz run_foreach_old(yaml::Yaml tree)
+fn sz count_nodes_old(Object* o)
 {
-	sz n = 0;
-	for (sz d = 0; d < tree.docs.len(); d++)
+	if (!o) return 0;
+	sz n = 1;
+	if (o.is_map())
 	{
-		Object* doc = tree.docs[d];
-		if (doc.is_map())
+		o.@each_entry(; String k, Object* v) { n += count_nodes_old(v); };
+	}
+	else if (o.is_array())
+	{
+		for (sz i = 0; i < o.get_len(); i++)
 		{
-			doc.@each_entry(; String k, Object* v) { n++; };
-		}
-		else if (doc.is_array())
-		{
-			n += doc.get_len();
+			n += count_nodes_old(o.get_at(i));
 		}
 	}
 	return n;
 }
 
-// New foreach: iterate all top-level collection elements
+// Old foreach: iterate all collection elements recursively
+fn sz run_foreach_old(yaml::Yaml tree)
+{
+	sz n = 0;
+	for (sz d = 0; d < tree.docs.len(); d++)
+	{
+		n += count_nodes_old(tree.docs[d]);
+	}
+	return n;
+}
+
+fn sz count_nodes2(yaml2::Node n)
+{
+	if (!n.exists()) return 0;
+	sz n_count = 1;
+	if (n.is_map())
+	{
+		foreach (e : n.entries())
+		{
+			n_count += count_nodes2(e.value);
+		}
+	}
+	else if (n.is_seq())
+	{
+		foreach (x : n.items())
+		{
+			n_count += count_nodes2(x);
+		}
+	}
+	return n_count;
+}
+
+// New foreach: iterate all collection elements recursively
 fn sz run_foreach2(yaml2::Yaml tree)
 {
 	sz n = 0;
@@ -165,14 +206,7 @@ fn sz run_foreach2(yaml2::Yaml tree)
 	while (child != 0)
 	{
 		yaml2::Node doc = (yaml2::Node){ tree.tree, child };
-		if (doc.is_map())
-		{
-			foreach (e : doc.entries()) n++;
-		}
-		else if (doc.is_seq())
-		{
-			foreach (x : doc.items()) n++;
-		}
+		n += count_nodes2(doc);
 		child = tree.tree.nodes[child].next;
 	}
 	return n;
@@ -247,7 +281,7 @@ fn int main(String[] args)
 		old_tree = t;
 		has_old_tree = true;
 	}
-	if (mode == "json2" || mode == "find2" || mode == "foreach2")
+	if (mode == "decode2" || mode == "json2" || mode == "find2" || mode == "foreach2")
 	{
 		yaml2::Yaml? t = load_tree2(input);
 		if (catch t)
@@ -314,6 +348,7 @@ fn int main(String[] args)
 				case "events": run_events_old(input);
 				case "events2": run_events2(buf, expect_reject);
 				case "decode": run_decode(old_tree, &arena);
+				case "decode2": run_decode2(new_tree, &arena);
 				case "json": run_json_old(old_tree);
 				case "json2": run_json2(new_tree);
 				case "find": run_find_old(old_tree);
@@ -333,7 +368,7 @@ fn int main(String[] args)
 	// Allocation counts through TrackingAllocator
 	TrackingAllocator tracker;
 	Allocator inner = mem;
-	if (mode == "decode") inner = &arena;
+	if (mode == "decode" || mode == "decode2") inner = &arena;
 	tracker.init(inner);
 	sz result = 0;
 
@@ -350,6 +385,7 @@ fn int main(String[] args)
 		case "events": result = run_events_old(input);
 		case "events2": result = run_events2(buf, expect_reject);
 		case "decode": result = run_decode(old_tree, &tracker);
+		case "decode2": result = run_decode2(new_tree, &tracker);
 		case "json": result = run_json_old(old_tree);
 		case "json2": result = run_json2(new_tree);
 		case "find": result = run_find_old(old_tree);

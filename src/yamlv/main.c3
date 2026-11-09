@@ -37,7 +37,6 @@ fn int main(String[] args)
 			return 1;
 		}
 		char[] input_bytes = writer.array_view();
-		String input = writer.str_view();
 		if (events)
 		{
 			yaml2::parser::Parser p;
@@ -56,7 +55,11 @@ fn int main(String[] args)
 		defer data.free();
 		if (json)
 		{
-			io::print(data);   // one JSON line per document
+			if (catch err = data.write_json(io::stdout()))
+			{
+				io::eprintfn("error: %s", err);
+				return 1;
+			}
 		}
 		else
 		{

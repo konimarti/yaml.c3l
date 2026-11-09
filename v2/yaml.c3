@@ -23,22 +23,15 @@ fn void Yaml.free(&self)
 	self.tree = null;
 }
 
-// Copy the input once (the tree owns the copy), then parse the copy in place.
-fn Yaml? from_string(String s, Allocator allocator = mem, bool verbose = true)
+fn Yaml? parse_buffer(char[] buf, bool owns_input, Allocator allocator = mem, bool verbose = true) @private
 {
-	char[] copy = {};
-	if (s.len)
-	{
-		copy = alloc::alloc_array(allocator, char, s.len);
-		mem::copy(copy.ptr, s.ptr, s.len);
-	}
-	Tree* t = new_tree(allocator, copy, owns_input: s.len != 0);
+	Tree* t = new_tree(allocator, buf, owns_input: owns_input);
 	defer catch t.free();
-	uint initial_nodes = math::max(64u, (uint)(s.len / 14));
+	uint initial_nodes = math::max(64u, (uint)(buf.len / 14));
 	t.reserve_nodes(initial_nodes);
 
 	Parser parser;
-	parser.init_inplace(copy, verbose, allocator);
+	parser.init_inplace(buf, verbose, allocator);
 	defer parser.free();
 
 	Builder b;
@@ -51,20 +44,41 @@ fn Yaml? from_string(String s, Allocator allocator = mem, bool verbose = true)
 	return (Yaml){ t };
 }
 
+// Copy the input once (the tree owns the copy), then parse the copy in place.
+fn Yaml? from_string(String s, Allocator allocator = mem, bool verbose = true)
+{
+	char[] copy = {};
+	if (s.len)
+	{
+		copy = alloc::alloc_array(allocator, char, s.len);
+		mem::copy(copy.ptr, s.ptr, s.len);
+	}
+	return parse_buffer(copy, s.len != 0, allocator, verbose);
+}
+
 fn Yaml? from_stream(InStream reader, Allocator allocator = mem, bool verbose = true)
 {
 	ByteWriter writer;
-	writer.init(mem);
-	defer (void)writer.destroy();
+	writer.init(allocator);
 	io::copy_to(reader, &writer)!;
-	return from_string(writer.str_view(), allocator, verbose);
+	char[] buf = writer.array_view();
+	writer.bytes = {}; // transfer ownership to tree
+	return parse_buffer(buf, true, allocator, verbose);
 }
 
 fn Yaml? from_file(String filename, Allocator allocator = mem, bool verbose = true)
 {
 	File f = io::file::open(filename, "rb")!;
 	defer (void)f.close();
-	return from_stream(&f, allocator, verbose)!;
+	long? fsz = f.size();
+	if (try size = fsz && size >= 0)
+	{
+		char[] buf = alloc::alloc_array(allocator, char, (sz)size);
+		defer catch alloc::free(allocator, buf);
+		sz read = f.read(buf)!;
+		return parse_buffer(buf[:read], true, allocator, verbose);
+	}
+	return from_stream(&f, allocator, verbose);
 }
 
 // IN PLACE: `buf` must be WRITABLE (a String literal converts to char[] and crashes on the first
@@ -72,27 +86,7 @@ fn Yaml? from_file(String filename, Allocator allocator = mem, bool verbose = tr
 // long as the Yaml. The tree allocates nodes (and spills) with `allocator`.
 fn Yaml? from_buffer(char[] buf, Allocator allocator = mem, bool verbose = true)
 {
-	Tree* t = new_tree(allocator, buf, owns_input: false);
-	defer catch t.free();
-	uint initial_nodes = math::max(64u, (uint)(buf.len / 14));
-	t.reserve_nodes(initial_nodes);
-
-	Parser* parser = alloc::new(allocator, Parser);
-	defer
-	{
-		parser.free();
-		alloc::free(allocator, parser);
-	}
-	parser.init_inplace(buf, verbose, allocator);
-
-	Builder b;
-	b.init(t, parser, allocator, verbose);
-	defer b.free();
-
-	b.build_stream()!;
-	t.arena = parser.take_spill();
-	t.input = parser.input();
-	return (Yaml){ t };
+	return parse_buffer(buf, false, allocator, verbose);
 }
 
 // Parses a String, a char[] (both COPIED), a DString or an InStream (a File, a ByteReader, ...) by its type.

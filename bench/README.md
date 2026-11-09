@@ -8,15 +8,26 @@ bench/run.sh -n 5              # build with -O2, run every file in its own proce
                                # print a markdown table, write bench/out.csv
 ```
 
-One run by hand: `c3c build bench -O2 && build/bench <tree|events|decode> <file> [iterations]`
+One run by hand: `c3c build bench -O2 && build/bench <mode> <file> [iterations]`
 prints one CSV line.
 
 ## Modes
 
 - `tree`: `yaml::from_string` on an input already in memory (no I/O), then `free`.
-- `events`: the `Parser.next()` loop only, no tree.
-- `decode`: `decode{Config}` of a tree built beforehand (only `servers.yaml`, which fits the
-  `Config` struct in `bench.c3`). The tree is not part of the measurement.
+- `tree2`: `yaml2::from_string` (v2 tree) on an input in memory, then `free`.
+- `from_buffer`: `yaml2::from_buffer` in-place parsing of a mutable buffer, then `free`.
+- `events`: `yaml::parser::Parser.next()` loop only, no tree.
+- `events2`: `yaml2::parser::Parser.next()` zero-allocation in-place event parser, no tree.
+- `decode`: `yaml::decode{Config}` of a tree built beforehand (only `servers.yaml`).
+- `decode2`: `yaml2::decode{Config}` of a v2 tree built beforehand (only `servers.yaml`).
+- `json`: `string::tformat("%s", tree)` JSON output on the old tree.
+- `json2`: `string::tformat("%s", tree)` streaming JSON output on the v2 tree.
+- `find`: look up 1,000 keys (`map_100k.k_%d`) on the old tree.
+- `find2`: look up 1,000 keys (`map_100k.k_%d`) on the v2 tree (using lazy map index).
+- `foreach`: recursive traversal counting all nodes on the old tree.
+- `foreach2`: recursive traversal counting all nodes on the v2 tree.
+- `free`: `yaml::Yaml.free` on an existing tree.
+- `free2`: `yaml2::Yaml.free` on an existing v2 tree.
 
 The library calls are in `run_tree`, `run_events`, `load_tree` and `run_decode` in `bench.c3`;
 that is all to change when the API changes.

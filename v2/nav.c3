@@ -73,7 +73,7 @@ fn Node Seq.get_at(&self, sz i) @operator([])
 	while ((sz)self.index < i && self.cursor != 0)
 	{
 		self.cursor = self.node.tree.nodes[self.cursor].next;
-		self.node.tree.hops++;
+		$if env::TESTING: self.node.tree.hops++; $endif
 		self.index++;
 	}
 	if (self.cursor == 0) return (Node){};
@@ -95,18 +95,18 @@ fn Entry Map.get_at(&self, sz i) @operator([])
 		while (self.cursor != 0 && (self.node.tree.nodes[self.cursor].flags & F_SHADOWED) != 0)
 		{
 			self.cursor = self.node.tree.nodes[self.cursor].next;
-			self.node.tree.hops++;
+			$if env::TESTING: self.node.tree.hops++; $endif
 		}
 		self.index = 0;
 	}
 	while ((sz)self.index < i && self.cursor != 0)
 	{
 		self.cursor = self.node.tree.nodes[self.cursor].next;
-		self.node.tree.hops++;
+		$if env::TESTING: self.node.tree.hops++; $endif
 		while (self.cursor != 0 && (self.node.tree.nodes[self.cursor].flags & F_SHADOWED) != 0)
 		{
 			self.cursor = self.node.tree.nodes[self.cursor].next;
-			self.node.tree.hops++;
+			$if env::TESTING: self.node.tree.hops++; $endif
 		}
 		self.index++;
 	}
@@ -129,18 +129,65 @@ fn Entry Map.get_at(&self, sz i) @operator([])
 }
 
 // ---- the document list ----
+struct Docs
+{
+	Tree* tree;
+	uint index;
+	uint cursor;
+}
+
+fn sz Docs.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
+
+fn Node Docs.get_at(&self, sz i) @operator([])
+{
+	if (!self.tree || i >= (sz)self.tree.ndocs) return (Node){};
+	uint first = self.tree.nodes[0].first;
+	if (!first) return (Node){};
+
+	if (self.cursor == 0 || i < (sz)self.index)
+	{
+		self.cursor = first;
+		self.index = 0;
+	}
+	while ((sz)self.index < i && self.cursor != 0)
+	{
+		self.cursor = self.tree.nodes[self.cursor].next;
+		$if env::TESTING: self.tree.hops++; $endif
+		self.index++;
+	}
+	if (self.cursor == 0) return (Node){};
+	return (Node){ self.tree, self.cursor };
+}
+
+fn Docs Yaml.docs(&self) => (Docs){ .tree = self.tree };
+
 fn sz Yaml.len(&self) @operator(len) => self.tree ? (sz)self.tree.ndocs : 0;
 
+// Retrieves document `i` (0-based) from the stream.
+// Sequential forward access (doc(0), doc(1), ...) runs in amortized O(1) time due to an internal
+// cursor cache. Backwards or non-monotonic random access requires traversing from the beginning
+// or previous position in O(i) time. For linear iteration, consider using `Yaml.docs()` instead.
 fn Node Yaml.doc(&self, sz i)
 {
 	if (!self.tree || i >= (sz)self.tree.ndocs) return (Node){};
 	uint child = self.tree.nodes[0].first;
 	sz cur = 0;
-	while (child != 0)
+	if (self.tree.last_doc_id != 0 && i >= (sz)self.tree.last_doc_idx)
 	{
-		if (cur == i) return (Node){ self.tree, child };
+		child = self.tree.last_doc_id;
+		cur = (sz)self.tree.last_doc_idx;
+	}
+	while (child != 0 && cur < i)
+	{
 		child = self.tree.nodes[child].next;
+		$if env::TESTING: self.tree.hops++; $endif
 		cur++;
+	}
+	if (child != 0)
+	{
+		self.tree.last_doc_idx = (uint)cur;
+		self.tree.last_doc_id = child;
+		return (Node){ self.tree, child };
 	}
 	return (Node){};
 }
@@ -153,6 +200,65 @@ fn Node? Yaml.get_in(&self, sz doc, String path)
 	Node d = self.doc(doc);
 	if (!d.exists()) return NOT_FOUND~;
 	return d.get(path);
+}
+
+fn MapIndex* build_map_index(Tree* tree, uint map_id)
+{
+	uint count = tree.nodes[map_id].val.len;
+	uint cap = 128;
+	while (cap < count * 2) cap *= 2;
+	MapIndexSlot* slots = alloc::alloc_array(tree.allocator, MapIndexSlot, cap).ptr;
+	mem::clear((char*)slots, MapIndexSlot::size * cap);
+	ulong mask = (ulong)cap - 1;
+	uint child = tree.nodes[map_id].first;
+	while (child != 0)
+	{
+		NodeData* nd = &tree.nodes[child];
+		if ((nd.flags & (F_SHADOWED | F_KEY_NODE)) == 0)
+		{
+			String k = tree.text(nd.key);
+			ulong h = hash_string(k, 0);
+			ulong idx = h & mask;
+			while (slots[idx].node_id != 0) idx = (idx + 1) & mask;
+			slots[idx] = { child, h };
+		}
+		child = nd.next;
+	}
+	MapIndex* mi = alloc::new(tree.allocator, MapIndex);
+	*mi = { slots, cap };
+	return mi;
+}
+
+fn MapIndex* Tree.get_or_build_map_index(&self, uint map_id)
+{
+	for (uint i = 0; i < self.map_indices_len; i++)
+	{
+		if (self.map_indices[i].map_id == map_id) return self.map_indices[i].index;
+	}
+	MapIndex* mi = build_map_index(self, map_id);
+	if (self.map_indices_len == self.map_indices_cap)
+	{
+		self.map_indices_cap = self.map_indices_cap ? self.map_indices_cap * 2 : 4;
+		self.map_indices = alloc::realloc_array(self.allocator, self.map_indices, MapIndexEntry, self.map_indices_cap).ptr;
+	}
+	self.map_indices[self.map_indices_len++] = { map_id, mi };
+	return mi;
+}
+
+fn uint map_index_lookup(Tree* tree, MapIndex* mi, String key)
+{
+	ulong mask = (ulong)mi.cap - 1;
+	ulong h = hash_string(key, 0);
+	ulong idx = h & mask;
+	while (mi.slots[idx].node_id != 0)
+	{
+		if (mi.slots[idx].hash == h && tree.text(tree.nodes[mi.slots[idx].node_id].key) == key)
+		{
+			return mi.slots[idx].node_id;
+		}
+		idx = (idx + 1) & mask;
+	}
+	return 0;
 }
 
 // ---- navigation ----
@@ -195,21 +301,30 @@ fn Node? Node.get(self, String path)
 		else if (k == MAPPING)
 		{
 			uint target = curr.resolve_id();
-			uint child = curr.tree.nodes[target].first;
 			uint found = 0;
-			while (child != 0)
+			NodeData* mnd = &curr.tree.nodes[target];
+			if (mnd.val.len > 64)
 			{
-				NodeData* nd = &curr.tree.nodes[child];
-				if ((nd.flags & F_SHADOWED) == 0 && (nd.flags & F_KEY_NODE) == 0)
+				MapIndex* mi = curr.tree.get_or_build_map_index(target);
+				found = map_index_lookup(curr.tree, mi, seg);
+			}
+			else
+			{
+				uint child = mnd.first;
+				while (child != 0)
 				{
-					String ktext = curr.tree.text(nd.key);
-					if (ktext == seg)
+					NodeData* nd = &curr.tree.nodes[child];
+					if ((nd.flags & F_SHADOWED) == 0 && (nd.flags & F_KEY_NODE) == 0)
 					{
-						found = child;
-						break;
+						String ktext = curr.tree.text(nd.key);
+						if (ktext == seg)
+						{
+							found = child;
+							break;
+						}
 					}
+					child = nd.next;
 				}
-				child = nd.next;
 			}
 			if (!found) return NOT_FOUND~;
 			curr = (Node){ curr.tree, found };
@@ -231,7 +346,7 @@ fn Node Node.at(self, sz index)
 	while (child != 0)
 	{
 		if (cur == index) return (Node){ self.tree, child };
-		self.tree.hops++;
+		$if env::TESTING: self.tree.hops++; $endif
 		child = self.tree.nodes[child].next;
 		cur++;
 	}
